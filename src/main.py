@@ -138,7 +138,7 @@ if __name__ == "__main__":
         callbacks=[
             pl.callbacks.ModelCheckpoint(
                 dirpath=config["logging"]["checkpoint_dir"],
-                filename=f"MoE-SNLI-{datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}-{{epoch:02d}}-{{val_accuracy:.3f}}",
+                filename=f"MoE-SNLI-{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}-{{epoch:02d}}-{{val_accuracy:.3f}}",
                 save_top_k=1,
                 monitor="val_accuracy",
                 mode="max",

@@ -1,5 +1,6 @@
+import numpy as np
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset
 from datasets import load_dataset
 
 from config import config
@@ -25,23 +26,29 @@ class SNLIDataset(Dataset):
 
         # Apply subset ratio
         subset_size = int(len(self.dataset) * subset_ratio)
-        self.indices = torch.randperm(len(self.dataset))[:subset_size]
+        if subset_size == 0:
+            raise ValueError(f"Subset size is zero for split {split}. Check config values.")
+
+        # Randomly sample subset
+        self.indices = np.random.choice(len(self.dataset), size=subset_size, replace=False)
 
     def __len__(self):
-        return len(self.dataset)
+        return len(self.indices)
 
     def __getitem__(self, idx):
-        text1 = self.dataset[idx]["premise"]
-        text2 = self.dataset[idx]["hypothesis"]
-        label = self.dataset[idx]["label"]
-        if label == -1:
-            return None
+        text1 = self.dataset[self.indices[idx].item()]["premise"]
+        text2 = self.dataset[self.indices[idx].item()]["hypothesis"]
+        label = self.dataset[self.indices[idx].item()]["label"]
 
-        return text1, text2, label
+        return (text1, text2, label) if label != -1 else None
 
 
 def collate_fn(batch):
     batch = [b for b in batch if b is not None]
-    texts1, texts2, labels = zip(*batch)
+    if not batch:
+        return [], [], torch.tensor([])
 
-    return texts1, texts2, torch.tensor(labels)
+    # Split [(text1, text2, label)] into [text1], [text2], [label]
+    text1, text2, labels = zip(*batch)
+
+    return text1, text2, torch.tensor(labels)
