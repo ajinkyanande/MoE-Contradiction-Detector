@@ -1,0 +1,15 @@
+**__pycache__/
+*.vscode/*
+*logs/*
+
+.~lock.*
+*.txt
+*.log
+*.prof
+*.zip
+*.json
+*.zip
+*.tar
+*.gz
+
+test*
