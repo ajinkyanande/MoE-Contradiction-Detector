@@ -26,6 +26,9 @@ class SNLIModel(pl.LightningModule):
     def __init__(self):
         super().__init__()
 
+        # Save hyperparameters for reproducibility
+        self.save_hyperparameters()
+
         self.model = MoEContradictionClassifier()
         self.lr = config["training"]["lr"]["lr_start"]
 
@@ -33,9 +36,6 @@ class SNLIModel(pl.LightningModule):
         self.expert_selection_counts = defaultdict(int)
         self.expert_first_choice_counts = defaultdict(int)
         self.expert_second_choice_counts = defaultdict(int)
-
-        # Save hyperparameters for reproducibility
-        self.save_hyperparameters()
 
     def forward(self, text1, text2):
         return self.model(text1, text2)
@@ -126,21 +126,34 @@ class SNLIModel(pl.LightningModule):
         if not scheduler_type:
             return optimizer
 
-        if scheduler_type == "cosine":
+        if scheduler_type == "cosine_annealing":
             scheduler = optim.lr_scheduler.CosineAnnealingLR(
                 optimizer,
                 T_max=config["training"]["epochs"],
                 eta_min=config["training"]["lr"]["cosine_annealing"]["lr_end"],
+                verbose=True,
             )
-            return [optimizer], [scheduler]
+            return {"optimizer": optimizer, "lr_scheduler": scheduler}
+
+        elif scheduler_type == "cosine_annealing_warm_restarts":
+            scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
+                optimizer,
+                T_0=config["training"]["lr"]["cosine_annealing_warm_restarts"]["T_0"],
+                T_mult=config["training"]["lr"]["cosine_annealing_warm_restarts"]["T_mult"],
+                eta_min=config["training"]["lr"]["cosine_annealing_warm_restarts"]["lr_end"],
+                verbose=True,
+            )
+            return {"optimizer": optimizer, "lr_scheduler": scheduler}
 
         elif scheduler_type == "reduce_on_plateau":
             scheduler = {
                 "scheduler": optim.lr_scheduler.ReduceLROnPlateau(
                     optimizer,
+                    mode="min",
                     patience=config["training"]["lr"]["reduce_on_plateau"]["patience"],
                     threshold=config["training"]["lr"]["reduce_on_plateau"]["threshold"],
                     factor=config["training"]["lr"]["reduce_on_plateau"]["factor"],
+                    verbose=True,
                 ),
                 "monitor": "val_loss",
             }
@@ -191,6 +204,14 @@ if __name__ == "__main__":
         num_workers=2,
     )
 
+    # Check for pretrained model checkpoint
+    if config["model"]["pretrained_model_path"] and os.path.exists(config["model"]["pretrained_model_path"]):
+        print(f"Loading model from checkpoint: {config['model']['pretrained_model_path']}")
+        model_wrapper = SNLIModel.load_from_checkpoint(config["model"]["pretrained_model_path"])
+    else:
+        print("No pretrained model found. Initializing a new model.")
+        model_wrapper = SNLIModel()
+
     # Initialize Trainer
     trainer = pl.Trainer(
         max_epochs=config["training"]["epochs"],
@@ -211,5 +232,4 @@ if __name__ == "__main__":
     )
 
     # Train Model
-    model_wrapper = SNLIModel()
     trainer.fit(model_wrapper, train_loader, val_loader)

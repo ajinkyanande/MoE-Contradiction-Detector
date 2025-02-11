@@ -1,4 +1,8 @@
 model:
+  # Previous model / checkpoint to continue training from
+  # model params below are ignored if this is set
+  pretrained_model_path: null
+
   tokenizer:
     model: "microsoft/MiniLM-L12-H384-uncased"
     max_length: 128
@@ -10,27 +14,33 @@ model:
     # Layers to freeze for the base model during training
     # positive value means from the start, negative value means from the end
     # "all" is freezing all layers
-    freeze_layers: -2
+    freeze_layers: -3
 
     # Classifier to select experts
-    hidden_dims: [256, 128]
+    hidden_dims: [384, 256, 128, 64, 3]
     dropout: 0.1
 
   experts_network:
     # Base models for embedding sentence for the expert network
     base_encoder_model: "microsoft/MiniLM-L12-H384-uncased"
 
+    # Layers to freeze for the base model during training
+    # positive value means from the start, negative value means from the end
+    # "all" is freezing all layers
+    freeze_layers: -3
+
     # Number of experts and top_k experts to activate
     num_experts: 4
     top_k: 2
 
-    # Layers to freeze for the base model during training
-    # positive value means from the start, negative value means from the end
-    # "all" is freezing all layers
-    freeze_layers: 0
+    # LoRA parameters for the expert models
+    lora_r: 16
+    lora_alpha: 32
+    lora_dropout: 0.1
+    lora_target_modules: ["query", "key", "value"]
 
     # Classifier to predict the label
-    classifier_hidden_dims: [256, 128]
+    classifier_hidden_dims: [384, 256, 128, 64, 3]
     classifier_dropout: 0.1
 
 data:
@@ -40,23 +50,24 @@ data:
 
 training:
   batch_size: 64
-  epochs: 10
-
-  # Previous model / checkpoint to continue training from
-  # model params are ignored if this is set
-  pretrained_model_path: null
+  epochs: 25
 
   lr:
-    scheduler_type: "reduce_on_plateau"
+    scheduler_type: "cosine_annealing_warm_restarts"
     lr_start: 0.001
 
     cosine_annealing:
-      lr_end: 0.0001
+      lr_end: 0.00001
+
+    cosine_annealing_warm_restarts:
+      lr_end: 0.00001
+      T_0: 5
+      T_mult: 2
 
     reduce_on_plateau:
-      patience: 3
+      patience: 2
       threshold: 0.0001
-      factor: 0.1
+      factor: 0.5
 
   # Encourages diversity in the expert selection
   diversity_loss_weight: 0.2
@@ -70,5 +81,3 @@ inference:
 logging:
   log_dir: "logs"
   checkpoint_dir: "logs/checkpoints"
-  mlflow_uri: "http://localhost:5000"
-  mlflow_experiment_name: "default"

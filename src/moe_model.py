@@ -59,10 +59,10 @@ class MoEContradictionClassifier(nn.Module):
 
         # LoRA Config
         lora_config = LoraConfig(
-            r=16,
-            lora_alpha=32,
-            lora_dropout=0.1,
-            target_modules=["query", "key", "value"],
+            r=config["model"]["experts_network"]["lora_r"],
+            lora_alpha=config["model"]["experts_network"]["lora_alpha"],
+            lora_dropout=config["model"]["experts_network"]["lora_dropout"],
+            target_modules=config["model"]["experts_network"]["lora_target_modules"],
         )
 
         # Define experts (each a fine-tuned Transformer model)
@@ -168,13 +168,16 @@ class MoEContradictionClassifier(nn.Module):
         """
         layers_to_freeze = []
 
-        layers = (
-            getattr(model.encoder, "layer", None)
-            or getattr(model.encoder, "block", None)
-            or getattr(model, "layer", None)
-        )
-        if layers is None:
-            raise ValueError("Could not find any layers to freeze.")
+        # MiniLM
+        if hasattr(model, "encoder") and hasattr(model.encoder, "layer"):
+            layers = model.encoder.layer
+
+        # ALBERT
+        elif hasattr(model, "encoder") and hasattr(model.encoder, "albert_layer_groups"):
+            layers = model.encoder.albert_layer_groups
+
+        else:
+            raise ValueError(f"Could not find any layers to freeze for model:\n{model}")
 
         if isinstance(freeze_layers, int):
             if freeze_layers > 0:
