@@ -1,3 +1,6 @@
+from collections import defaultdict
+import atexit
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -20,7 +23,8 @@ class SparseGatingNetwork(nn.Module):
 
         for hidden_dim in config["model"]["gating_network"]["hidden_dims"]:
             hidden_layers.append(nn.Linear(input_dim, hidden_dim))
-            hidden_layers.append(nn.ReLU())
+            hidden_layers.append(nn.LayerNorm(hidden_dim))
+            hidden_layers.append(nn.GELU())
             hidden_layers.append(nn.Dropout(config["model"]["gating_network"]["dropout"]))
             input_dim = hidden_dim
 
@@ -32,6 +36,11 @@ class SparseGatingNetwork(nn.Module):
         x: (batch_size, input_dim) -> usually CLS token representation
         """
         return F.softmax(self.gating_net(x), dim=-1)  # (batch_size, output_dim)
+
+
+# Count how many times each expert was selected and print at the end of training
+experts_counter = defaultdict(int)
+atexit.register(lambda: print("Expert Selection Counts:", experts_counter))
 
 
 class MoEContradictionClassifier(nn.Module):
@@ -83,6 +92,7 @@ class MoEContradictionClassifier(nn.Module):
 
         for hidden_dim in config["model"]["experts_network"]["classifier_hidden_dims"]:
             layers.append(nn.Linear(input_dim, hidden_dim))
+            layers.append(nn.LayerNorm(hidden_dim))
             layers.append(nn.ReLU())
             layers.append(nn.Dropout(config["model"]["experts_network"]["classifier_dropout"]))
             input_dim = hidden_dim
@@ -126,41 +136,62 @@ class MoEContradictionClassifier(nn.Module):
         # Select top-k experts
         top_k_gating_probs, top_k_gating_indices = gating_probs.topk(config["model"]["experts_network"]["top_k"], dim=-1)  # (batch_size, top_k)
 
-        # Expand input tensors to match expert selection shape
-        batch_size = input_ids.shape[0]
-        flat_input_ids = input_ids.repeat_interleave(config["model"]["experts_network"]["top_k"], dim=0)  # (batch_size * top_k, seq_len)
-        flat_attention_mask = attention_mask.repeat_interleave(config["model"]["experts_network"]["top_k"], dim=0)  # (batch_size * top_k, seq_len)
-        flat_expert_indices = top_k_gating_indices.view(-1)  # (batch_size * top_k)
+        batch_size = input_ids.size(0)
+        hidden_size = self.gating_encoder.config.hidden_size
 
-        # Initialize tensor for expert outputs
-        hidden_size = gating_cls_embds.shape[-1]
-        expert_cls_embds = torch.zeros(batch_size * config["model"]["experts_network"]["top_k"], hidden_size).to(device)  # (batch_size * top_k, hidden_size)
+        # Initialize expert outputs (weighted sum of expert outputs)
+        classifier_probs = torch.zeros((batch_size, hidden_size)).to(device)
 
-        for expert_idx in flat_expert_indices.unique():
-            # Select inputs for the expert
-            mask = flat_expert_indices == expert_idx  # (batch_size * top_k)
+        # Track number for sanity checking of updates happening for each sample in the batch
+        num_updates = torch.zeros((batch_size,)).to(device)
 
-            if mask.any():
-                selected_inputs = flat_input_ids[mask]  # (selected_size, seq_len)
-                selected_attention_mask = flat_attention_mask[mask]  # (selected_size, seq_len)
+        for i, expert_encoder in enumerate(self.expert_encoders):
+            # Get mask where this expert is selected
+            mask = top_k_gating_indices == i  # (batch_size, top_k)
 
-                # Forward pass through expert encoder and get [CLS] token representation
-                expert_out = self.expert_encoders[expert_idx](selected_inputs, attention_mask=selected_attention_mask)  # (selected_size, seq_len, hidden_size)
-                expert_cls_output = expert_out.last_hidden_state[:, 0, :]  # (selected_size, hidden_size)
+            assert mask.sum(dim=-1).max() <= 1, (
+                "Each sample should select an expert at most once in top_k selection."
+            )
 
-                # Assign results properly
-                expert_cls_embds[mask] = expert_cls_output
+            # Skip if this expert is not selected for any sample
+            if not mask.any():
+                continue
 
-        # Reshape back to (batch_size, top_k, hidden_size)
-        expert_cls_embds = expert_cls_embds.view(batch_size, config["model"]["experts_network"]["top_k"], hidden_size)
+            # Get batch indices where this expert is selected
+            selected_indices = mask.any(dim=-1)  # (batch_size,)
 
-        # Compute final output as a weighted sum of expert outputs
-        expert_outputs = (top_k_gating_probs.unsqueeze(-1) * expert_cls_embds).sum(dim=1)  # (batch_size, hidden_size)
+            # Select input ids and attention mask for this expert
+            sample_input_ids = input_ids[selected_indices, :]
+            sample_attention_mask = attention_mask[selected_indices, :]
+
+            # Get corresponding gating probabilities for this expert
+            sample_probs = top_k_gating_probs[selected_indices] * mask[selected_indices].float()  # (num_selected, top_k)
+            sample_probs = torch.sum(sample_probs, dim=-1, keepdim=True)  # (num_selected, 1)
+
+            # Forward pass through the expert and get [CLS] token representation
+            expert_out = expert_encoder(sample_input_ids, attention_mask=sample_attention_mask)  # (num_selected, seq_len, hidden_size)
+            expert_cls_embds = expert_out.last_hidden_state[:, 0, :]  # (num_selected, hidden_size)
+
+            # Weight the expert output by the gating probabilities
+            weighted_expert_cls_embds = expert_cls_embds * sample_probs  # (num_selected, hidden_size)
+
+            # Scatter the weighted outputs back to the full batch tensor
+            classifier_probs[selected_indices] += weighted_expert_cls_embds
+
+            # Increment number of updates for each sample
+            num_updates[selected_indices] += 1
+
+            # Increment expert selection count
+            experts_counter[i] += selected_indices.sum().item()
+
+        assert (num_updates == config["model"]["experts_network"]["top_k"]).all(), (
+            "Each sample in the batch should be updated exactly top_k times."
+        )
 
         # Forward pass through classifier
-        logits = self.classifier_net(expert_outputs)  # (batch_size, output_dim)
+        classifier_logits = self.classifier_net(classifier_probs)  # (batch_size, output_dim)
 
-        return logits, gating_probs
+        return classifier_logits, gating_probs
 
     def _freeze_layers(self, model, freeze_layers):
         """
@@ -197,6 +228,9 @@ class MoEContradictionClassifier(nn.Module):
 
 
 if __name__ == "__main__":
+    # # Set seed for reproducibility
+    # torch.manual_seed(0)
+
     # Load Model
     model = MoEContradictionClassifier()
 
@@ -205,8 +239,40 @@ if __name__ == "__main__":
     model.to(device)
 
     # Batch Input
-    text1_batch = ["The sky is blue.", "She likes coffee."]
-    text2_batch = ["The sky is not blue.", "She hates coffee."]
+    text1_batch = [
+        "The sky is blue.",
+        "She likes coffee.",
+        "The cat is sleeping.",
+        "The dog is running.",
+        "The sun is shining.",
+        "The sky is not blue.",
+        "She hates coffee.",
+        "I am a teacher.",
+        "The cat is playing.",
+        "The dog is barking.",
+        "The sun is setting.",
+        "The sky is red.",
+        "She likes tea.",
+        "I am a teacher.",
+        "I am a student in Carnegie Mellon University in Pittsburgh, Pennsylvania studying computer science.",
+    ]
+    text2_batch = [
+        "The sky is red.",
+        "She likes tea.",
+        "The cat is playing.",
+        "The dog is barking.",
+        "The sun is setting.",
+        "The sky is blue.",
+        "She likes coffee.",
+        "I am a student.",
+        "The cat is sleeping.",
+        "The dog is running.",
+        "The sun is shining.",
+        "The sky is not blue.",
+        "She hates coffee.",
+        "I am a student.",
+        "I am a teacher in University of California, Berkeley studying mechanical engineering for my PhD.",
+    ]
 
     # Forward pass (disable gradient computation for inference)
     with torch.no_grad():

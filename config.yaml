@@ -17,7 +17,7 @@ model:
     freeze_layers: -3
 
     # Classifier to select experts
-    hidden_dims: [384, 256, 128, 64, 3]
+    hidden_dims: [256, 128, 64]
     dropout: 0.1
 
   experts_network:
@@ -40,7 +40,7 @@ model:
     lora_target_modules: ["query", "key", "value"]
 
     # Classifier to predict the label
-    classifier_hidden_dims: [384, 256, 128, 64, 3]
+    classifier_hidden_dims: [256, 128, 64]
     classifier_dropout: 0.1
 
 data:
@@ -58,6 +58,7 @@ training:
 
     cosine_annealing:
       lr_end: 0.00001
+      T_max: 25
 
     cosine_annealing_warm_restarts:
       lr_end: 0.00001
@@ -74,6 +75,9 @@ training:
 
   gradient_clip: 1.0
   mixed_precision: "16-mixed"
+
+  # Accumulate gradients for x batches before updating the weights
+  accumulate_grad_batches: 16
 
 inference:
   best_model_path: "models/best_model.pth"

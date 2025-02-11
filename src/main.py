@@ -129,7 +129,7 @@ class SNLIModel(pl.LightningModule):
         if scheduler_type == "cosine_annealing":
             scheduler = optim.lr_scheduler.CosineAnnealingLR(
                 optimizer,
-                T_max=config["training"]["epochs"],
+                T_max=config["training"]["lr"]["cosine_annealing"]["T_max"],
                 eta_min=config["training"]["lr"]["cosine_annealing"]["lr_end"],
                 verbose=True,
             )
@@ -219,6 +219,7 @@ if __name__ == "__main__":
         accelerator=device,
         gradient_clip_val=config["training"]["gradient_clip"],
         precision=config["training"]["mixed_precision"],
+        accumulate_grad_batches=config["training"]["accumulate_grad_batches"],
         callbacks=[
             pl.callbacks.ModelCheckpoint(
                 dirpath=config["logging"]["checkpoint_dir"],
