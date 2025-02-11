@@ -43,7 +43,7 @@ class MoEContradictionClassifier(nn.Module):
         super().__init__()
 
         # Load tokenizer
-        self.tokenizer = AutoTokenizer.from_pretrained(config["model"]["gating_network"]["base_encoder_model"])
+        self.tokenizer = AutoTokenizer.from_pretrained(config["model"]["tokenizer"]["model"])
 
         # Load gating encoder
         self.gating_encoder = AutoModel.from_pretrained(config["model"]["gating_network"]["base_encoder_model"])
@@ -111,7 +111,7 @@ class MoEContradictionClassifier(nn.Module):
             return_tensors="pt",
             padding=True,
             truncation=True,
-            max_length=512,
+            max_length=config["model"]["tokenizer"]["max_length"],
         )
         input_ids = inputs["input_ids"].to(device)  # (batch_size, seq_len)
         attention_mask = inputs["attention_mask"].to(device)  # (batch_size, seq_len)
@@ -160,7 +160,7 @@ class MoEContradictionClassifier(nn.Module):
         # Forward pass through classifier
         logits = self.classifier_net(expert_outputs)  # (batch_size, output_dim)
 
-        return logits
+        return logits, gating_probs
 
     def _freeze_layers(self, model, freeze_layers):
         """
@@ -210,5 +210,4 @@ if __name__ == "__main__":
         logits = model(text1_batch, text2_batch)
 
     # Print logits
-    print(logits.shape)  # (batch_size, output_dim)
     print(logits)
