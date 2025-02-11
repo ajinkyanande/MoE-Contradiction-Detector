@@ -136,14 +136,11 @@ class MoEContradictionClassifier(nn.Module):
         # Select top-k experts
         top_k_gating_probs, top_k_gating_indices = gating_probs.topk(config["model"]["experts_network"]["top_k"], dim=-1)  # (batch_size, top_k)
 
-        batch_size = input_ids.size(0)
-        hidden_size = self.gating_encoder.config.hidden_size
-
         # Initialize expert outputs (weighted sum of expert outputs)
-        classifier_probs = torch.zeros((batch_size, hidden_size)).to(device)
+        classifier_probs = torch.zeros_like(gating_cls_embds).to(device)  # (batch_size, hidden_size)
 
         # Track number for sanity checking of updates happening for each sample in the batch
-        num_updates = torch.zeros((batch_size,)).to(device)
+        num_updates = torch.zeros(input_ids.size(0), dtype=torch.int).to(device)
 
         for i, expert_encoder in enumerate(self.expert_encoders):
             # Get mask where this expert is selected
@@ -184,7 +181,7 @@ class MoEContradictionClassifier(nn.Module):
             # Increment expert selection count
             experts_counter[i] += selected_indices.sum().item()
 
-        assert (num_updates == config["model"]["experts_network"]["top_k"]).all(), (
+        assert torch.all(num_updates == config["model"]["experts_network"]["top_k"]), (
             "Each sample in the batch should be updated exactly top_k times."
         )
 
