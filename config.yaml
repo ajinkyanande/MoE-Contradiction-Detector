@@ -3,11 +3,11 @@ model:
   # model params below are ignored if this is set
   pretrained_model_path: null
 
-  tokenizer:
-    model: "microsoft/MiniLM-L12-H384-uncased"
-    max_length: 128
-
   gating_network:
+    tokenizer:
+      model: "microsoft/MiniLM-L12-H384-uncased"
+      max_length: 128
+
     # Base models for embedding sentence for the gating network
     base_encoder_model: "microsoft/MiniLM-L12-H384-uncased"
 
@@ -21,6 +21,10 @@ model:
     dropout: 0.1
 
   experts_network:
+    tokenizer:
+      model: "microsoft/MiniLM-L12-H384-uncased"
+      max_length: 128
+
     # Base models for embedding sentence for the expert network
     base_encoder_model: "microsoft/MiniLM-L12-H384-uncased"
 
