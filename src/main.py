@@ -1,7 +1,6 @@
 import os
 import gc
 from datetime import datetime
-from collections import defaultdict
 
 import torch
 import torch.nn as nn
@@ -11,6 +10,7 @@ import pytorch_lightning as pl
 
 from config import config
 from dataset import SNLIDataset, collate_fn
+# from simple_model import SimpleContradictionClassifier
 from moe_model import MoEContradictionClassifier
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -29,13 +29,9 @@ class SNLIModel(pl.LightningModule):
         # Save hyperparameters for reproducibility
         self.save_hyperparameters()
 
+        # self.model = SimpleContradictionClassifier()
         self.model = MoEContradictionClassifier()
         self.lr = config["training"]["lr"]["lr_start"]
-
-        # Track expert selection frequencies
-        self.expert_selection_counts = defaultdict(int)
-        self.expert_first_choice_counts = defaultdict(int)
-        self.expert_second_choice_counts = defaultdict(int)
 
     def forward(self, text1, text2):
         return self.model(text1, text2)
@@ -47,27 +43,6 @@ class SNLIModel(pl.LightningModule):
         ce_loss = nn.CrossEntropyLoss()(logits, labels)
         entropy_loss = -torch.mean(torch.sum(gating_probs * torch.log(gating_probs + 1e-8), dim=-1))
         return ce_loss + config["training"]["diversity_loss_weight"] * entropy_loss
-
-    def log_expert_stats(self, gating_probs, labels):
-        """
-        Accumulate expert selection statistics for logging at epoch end.
-        """
-        top_experts = torch.argsort(gating_probs, descending=True, dim=-1)
-        batch_size = labels.size(0)
-
-        for i in range(batch_size):
-            label = labels[i].item()
-            selected_experts = top_experts[i].tolist()
-
-            # Increment expert selection counts
-            for expert in selected_experts:
-                self.expert_selection_counts[expert] += 1
-
-            # Track first and second choice expert for this label
-            if len(selected_experts) > 0:
-                self.expert_first_choice_counts[(label, selected_experts[0])] += 1
-            if len(selected_experts) > 1:
-                self.expert_second_choice_counts[(label, selected_experts[1])] += 1
 
     def training_step(self, batch, batch_idx):
         """
@@ -90,9 +65,6 @@ class SNLIModel(pl.LightningModule):
         # Log learning rate safely
         current_lr = self.trainer.optimizers[0].param_groups[0]["lr"]
         self.log("learning_rate", current_lr, prog_bar=True)
-
-        # Accumulate expert selection statistics
-        self.log_expert_stats(gating_probs, labels)
 
         return loss
 
@@ -162,24 +134,6 @@ class SNLIModel(pl.LightningModule):
         else:
             raise ValueError(f"Unknown scheduler type: {scheduler_type}")
 
-    def on_train_epoch_end(self):
-        """
-        Log aggregated expert selection statistics at the end of each epoch.
-        """
-        gc.collect()
-        torch.cuda.empty_cache()
-
-        # Log top_K most selected experts
-        top_experts = sorted(self.expert_selection_counts.items(), key=lambda x: x[1], reverse=True)
-        top_experts = top_experts[:config["model"]["experts_network"]["top_k"]]
-        for expert, count in top_experts:
-            self.log(f"expert_{expert}_count", count)
-
-        # Reset counts for the next epoch
-        self.expert_selection_counts.clear()
-        self.expert_first_choice_counts.clear()
-        self.expert_second_choice_counts.clear()
-
 
 if __name__ == "__main__":
     # Set up device
@@ -204,10 +158,18 @@ if __name__ == "__main__":
         num_workers=2,
     )
 
+    # # Check for pretrained model checkpoint
+    # if config["simple_model"]["pretrained_model_path"] and os.path.exists(config["simple_model"]["pretrained_model_path"]):
+    #     print(f"Loading model from checkpoint: {config['simple_model']['pretrained_model_path']}")
+    #     model_wrapper = SNLIModel.load_from_checkpoint(config["simple_model"]["pretrained_model_path"])
+    # else:
+    #     print("No pretrained model found. Initializing a new model.")
+    #     model_wrapper = SNLIModel()
+
     # Check for pretrained model checkpoint
-    if config["model"]["pretrained_model_path"] and os.path.exists(config["model"]["pretrained_model_path"]):
-        print(f"Loading model from checkpoint: {config['model']['pretrained_model_path']}")
-        model_wrapper = SNLIModel.load_from_checkpoint(config["model"]["pretrained_model_path"])
+    if config["moe_model"]["pretrained_model_path"] and os.path.exists(config["moe_model"]["pretrained_model_path"]):
+        print(f"Loading model from checkpoint: {config['moe_model']['pretrained_model_path']}")
+        model_wrapper = SNLIModel.load_from_checkpoint(config["moe_model"]["pretrained_model_path"])
     else:
         print("No pretrained model found. Initializing a new model.")
         model_wrapper = SNLIModel()
@@ -223,6 +185,7 @@ if __name__ == "__main__":
         callbacks=[
             pl.callbacks.ModelCheckpoint(
                 dirpath=config["logging"]["checkpoint_dir"],
+                # filename=f"Simple-SNLI-{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}-{{epoch:02d}}-{{val_accuracy:.3f}}",
                 filename=f"MoE-SNLI-{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}-{{epoch:02d}}-{{val_accuracy:.3f}}",
                 save_top_k=1,
                 monitor="val_accuracy",

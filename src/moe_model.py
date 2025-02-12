@@ -1,5 +1,4 @@
 from collections import defaultdict
-import warnings
 import atexit
 
 import torch
@@ -9,6 +8,7 @@ from transformers import AutoModel, AutoTokenizer
 from peft import LoraConfig, get_peft_model
 
 from config import config
+from utils import freeze_layers
 
 
 class SparseGatingNetwork(nn.Module):
@@ -22,11 +22,11 @@ class SparseGatingNetwork(nn.Module):
         # Define hidden layers
         hidden_layers = []
 
-        for hidden_dim in config["model"]["gating_network"]["hidden_dims"]:
+        for hidden_dim in config["moe_model"]["gating_network"]["hidden_dims"]:
             hidden_layers.append(nn.Linear(input_dim, hidden_dim))
             hidden_layers.append(nn.LayerNorm(hidden_dim))
             hidden_layers.append(nn.GELU())
-            hidden_layers.append(nn.Dropout(config["model"]["gating_network"]["dropout"]))
+            hidden_layers.append(nn.Dropout(config["moe_model"]["gating_network"]["dropout"]))
             input_dim = hidden_dim
 
         # Add output layer
@@ -53,20 +53,20 @@ class MoEContradictionClassifier(nn.Module):
 
         # LoRA Config
         lora_config = LoraConfig(
-            r=config["model"]["experts_network"]["lora_r"],
-            lora_alpha=config["model"]["experts_network"]["lora_alpha"],
-            lora_dropout=config["model"]["experts_network"]["lora_dropout"],
-            target_modules=config["model"]["experts_network"]["lora_target_modules"],
+            r=config["moe_model"]["lora_r"],
+            lora_alpha=config["moe_model"]["lora_alpha"],
+            lora_dropout=config["moe_model"]["lora_dropout"],
+            target_modules=config["moe_model"]["lora_target_modules"],
         )
 
         # Load tokenizer
-        self.gating_tokenizer = AutoTokenizer.from_pretrained(config["model"]["gating_network"]["tokenizer"]["model"])
+        self.gating_tokenizer = AutoTokenizer.from_pretrained(config["moe_model"]["gating_network"]["tokenizer"]["model"])
 
         # Load base gating encoder
-        base_gating_encoder = AutoModel.from_pretrained(config["model"]["gating_network"]["base_encoder_model"])
+        base_gating_encoder = AutoModel.from_pretrained(config["moe_model"]["gating_network"]["base_encoder_model"])
 
         # Freeze the gating encoder
-        self._freeze_layers(base_gating_encoder, config["model"]["gating_network"]["freeze_layers"])
+        freeze_layers(base_gating_encoder, config["moe_model"]["gating_network"]["num_layers_to_freeze"])
 
         # Apply LoRA to gating encoder
         self.gating_encoder = get_peft_model(base_gating_encoder, lora_config)
@@ -74,21 +74,21 @@ class MoEContradictionClassifier(nn.Module):
         # Gating network (takes CLS representation and outputs expert probabilities)
         self.gating_network = SparseGatingNetwork(
             self.gating_encoder.config.hidden_size,
-            config["model"]["experts_network"]["num_experts"],
+            config["moe_model"]["experts_network"]["num_experts"],
         )
 
         # Load tokenizer
-        self.expert_tokenizer = AutoTokenizer.from_pretrained(config["model"]["experts_network"]["tokenizer"]["model"])
+        self.expert_tokenizer = AutoTokenizer.from_pretrained(config["moe_model"]["experts_network"]["tokenizer"]["model"])
 
         # Define experts (each a fine-tuned Transformer model)
         self.expert_encoders = nn.ModuleList()
 
-        for _ in range(config["model"]["experts_network"]["num_experts"]):
+        for _ in range(config["moe_model"]["experts_network"]["num_experts"]):
             # Load base expert encoder
-            base_expert_encoder = AutoModel.from_pretrained(config["model"]["experts_network"]["base_encoder_model"])
+            base_expert_encoder = AutoModel.from_pretrained(config["moe_model"]["experts_network"]["base_encoder_model"])
 
             # Freeze the expert encoder
-            self._freeze_layers(base_expert_encoder, config["model"]["experts_network"]["freeze_layers"])
+            freeze_layers(base_expert_encoder, config["moe_model"]["experts_network"]["num_layers_to_freeze"])
 
             # Apply LoRA to expert encoder
             expert_encoder = get_peft_model(base_expert_encoder, lora_config)
@@ -100,11 +100,11 @@ class MoEContradictionClassifier(nn.Module):
         input_dim = self.gating_encoder.config.hidden_size
         layers = []
 
-        for hidden_dim in config["model"]["experts_network"]["classifier_hidden_dims"]:
+        for hidden_dim in config["moe_model"]["experts_network"]["classifier_hidden_dims"]:
             layers.append(nn.Linear(input_dim, hidden_dim))
             layers.append(nn.LayerNorm(hidden_dim))
             layers.append(nn.ReLU())
-            layers.append(nn.Dropout(config["model"]["experts_network"]["classifier_dropout"]))
+            layers.append(nn.Dropout(config["moe_model"]["experts_network"]["classifier_dropout"]))
             input_dim = hidden_dim
 
         # Add output layer
@@ -131,7 +131,7 @@ class MoEContradictionClassifier(nn.Module):
             return_tensors="pt",
             padding=True,
             truncation=True,
-            max_length=config["model"]["gating_network"]["tokenizer"]["max_length"],
+            max_length=config["moe_model"]["gating_network"]["tokenizer"]["max_length"],
         )
         gating_input_ids = gating_inputs["input_ids"].to(device)  # (batch_size, seq_len)
         gating_attention_mask = gating_inputs["attention_mask"].to(device)  # (batch_size, seq_len)
@@ -144,7 +144,7 @@ class MoEContradictionClassifier(nn.Module):
         gating_probs = self.gating_network(gating_cls_embds)  # (batch_size, num_experts)
 
         # Select top-k experts
-        top_k_gating_probs, top_k_gating_indices = gating_probs.topk(config["model"]["experts_network"]["top_k"], dim=-1)  # (batch_size, top_k)
+        top_k_gating_probs, top_k_gating_indices = gating_probs.topk(config["moe_model"]["experts_network"]["top_k"], dim=-1)  # (batch_size, top_k)
 
         # Tokenize inputs
         expert_inputs = self.expert_tokenizer(
@@ -153,7 +153,7 @@ class MoEContradictionClassifier(nn.Module):
             return_tensors="pt",
             padding=True,
             truncation=True,
-            max_length=config["model"]["experts_network"]["tokenizer"]["max_length"],
+            max_length=config["moe_model"]["experts_network"]["tokenizer"]["max_length"],
         )
         expert_input_ids = expert_inputs["input_ids"].to(device)  # (batch_size, seq_len)
         expert_attention_mask = expert_inputs["attention_mask"].to(device)  # (batch_size, seq_len)
@@ -203,7 +203,7 @@ class MoEContradictionClassifier(nn.Module):
             # Increment expert selection count
             experts_counter[i] += selected_indices.sum().item()
 
-        assert torch.all(num_updates == config["model"]["experts_network"]["top_k"]), (
+        assert torch.all(num_updates == config["moe_model"]["experts_network"]["top_k"]), (
             "Each sample in the batch should be updated exactly top_k times."
         )
 
@@ -212,50 +212,17 @@ class MoEContradictionClassifier(nn.Module):
 
         return classifier_logits, gating_probs
 
-    def _freeze_layers(self, model, freeze_layers):
-        """
-        Freezes layers of a given model based on configuration.
-        """
-        if hasattr(model, "encoder") and hasattr(model.encoder, "layer"):
-            layers = list(model.encoder.layer)
-        else:
-            raise NotImplementedError(f"Freezing layers not implemented for {model}.")
-
-        if isinstance(freeze_layers, int):
-            if freeze_layers > 0:
-                layers_to_freeze = layers[:freeze_layers]
-            elif freeze_layers < 0:
-                layers_to_freeze = layers[freeze_layers:]
-            else:
-                return
-        elif freeze_layers == "all":
-            layers_to_freeze = layers
-        else:
-            raise ValueError(f"Invalid freeze_layers value: {freeze_layers}")
-
-        lora_layers_to_freeze = [name for name, _ in model.named_parameters() if "lora" in name]
-        if lora_layers_to_freeze:
-            warnings.warn(f"Make sure LoRA layers ({lora_layers_to_freeze}) are to be frozen.")
-
-        for layer in layers_to_freeze:
-            for param in layer.parameters():
-                param.requires_grad = False
-            print(F"Freezed layer {layers.index(layer)}")
-
 
 if __name__ == "__main__":
     # Set seed for reproducibility
     torch.manual_seed(0)
 
-    # Initialize model
     model = MoEContradictionClassifier()
     print("Model initialized:\n", model)
 
-    # Move model to device
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model.to(device)
 
-    # Batch Input
     text1_batch = [
         "The sky is blue.",
         "She likes coffee.",
@@ -291,9 +258,7 @@ if __name__ == "__main__":
         "I am a teacher in University of California, Berkeley studying mechanical engineering for my PhD.",
     ]
 
-    # Forward pass (disable gradient computation for inference)
     with torch.no_grad():
         logits = model(text1_batch, text2_batch)
 
-    # Print logits
     print(logits)

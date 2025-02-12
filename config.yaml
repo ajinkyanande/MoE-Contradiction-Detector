@@ -1,7 +1,40 @@
-model:
+simple_model:
   # Previous model / checkpoint to continue training from
   # model params below are ignored if this is set
   pretrained_model_path: null
+
+  tokenizer:
+    model: "microsoft/MiniLM-L12-H384-uncased"
+    max_length: 128
+
+  # Base model for embedding sentence
+  base_encoder_model: "microsoft/MiniLM-L12-H384-uncased"
+
+  # Layers to freeze for the base model during training
+  # positive value means from the start, negative value means from the end
+  # "all" is freezing all layers
+  num_layers_to_freeze: -3
+
+  # LoRA parameters for the model
+  lora_r: 16
+  lora_alpha: 32
+  lora_dropout: 0.1
+  lora_target_modules: ["query", "key", "value"]
+
+  # Classifier to predict the label
+  classifier_hidden_dims: [256, 128, 64]
+  classifier_dropout: 0.1
+
+moe_model:
+  # Previous model / checkpoint to continue training from
+  # model params below are ignored if this is set
+  pretrained_model_path: null
+
+  # LoRA parameters for the expert models
+  lora_r: 16
+  lora_alpha: 32
+  lora_dropout: 0.1
+  lora_target_modules: ["query", "key", "value"]
 
   gating_network:
     tokenizer:
@@ -14,7 +47,7 @@ model:
     # Layers to freeze for the base model during training
     # positive value means from the start, negative value means from the end
     # "all" is freezing all layers
-    freeze_layers: -3
+    num_layers_to_freeze: -3
 
     # Classifier to select experts
     hidden_dims: [256, 128, 64]
@@ -31,17 +64,11 @@ model:
     # Layers to freeze for the base model during training
     # positive value means from the start, negative value means from the end
     # "all" is freezing all layers
-    freeze_layers: -3
+    num_layers_to_freeze: -3
 
     # Number of experts and top_k experts to activate
     num_experts: 4
     top_k: 2
-
-    # LoRA parameters for the expert models
-    lora_r: 16
-    lora_alpha: 32
-    lora_dropout: 0.1
-    lora_target_modules: ["query", "key", "value"]
 
     # Classifier to predict the label
     classifier_hidden_dims: [256, 128, 64]
@@ -53,12 +80,13 @@ data:
   validation_subset: 1.0
 
 training:
-  batch_size: 64
   epochs: 25
+  batch_size: 64
+  accumulate_grad_batches: 16
 
   lr:
-    scheduler_type: "cosine_annealing_warm_restarts"
     lr_start: 0.001
+    scheduler_type: "cosine_annealing_warm_restarts"
 
     cosine_annealing:
       lr_end: 0.00001
@@ -67,7 +95,7 @@ training:
     cosine_annealing_warm_restarts:
       lr_end: 0.00001
       T_0: 5
-      T_mult: 2
+      T_mult: 4
 
     reduce_on_plateau:
       patience: 2
@@ -79,9 +107,6 @@ training:
 
   gradient_clip: 1.0
   mixed_precision: "16-mixed"
-
-  # Accumulate gradients for x batches before updating the weights
-  accumulate_grad_batches: 16
 
 inference:
   best_model_path: "models/best_model.pth"
