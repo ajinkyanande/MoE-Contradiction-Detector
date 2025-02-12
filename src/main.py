@@ -41,6 +41,8 @@ class SNLIModel(pl.LightningModule):
         Combined loss: CrossEntropy + Expert Diversity Loss
         """
         ce_loss = nn.CrossEntropyLoss()(logits, labels)
+        if gating_probs is None:
+            return ce_loss
         entropy_loss = -torch.mean(torch.sum(gating_probs * torch.log(gating_probs + 1e-8), dim=-1))
         return ce_loss + config["training"]["diversity_loss_weight"] * entropy_loss
 
