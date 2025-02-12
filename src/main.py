@@ -53,6 +53,8 @@ class SNLIModel(pl.LightningModule):
             torch.cuda.empty_cache()
 
         text1, text2, labels = batch
+        # logits = self.model(text1, text2)
+        # loss = self.criterion(logits, labels)
         logits, gating_probs = self.model(text1, text2)
         loss = self.criterion(logits, labels, gating_probs)
 
@@ -77,6 +79,8 @@ class SNLIModel(pl.LightningModule):
             torch.cuda.empty_cache()
 
         text1, text2, labels = batch
+        # logits = self.model(text1, text2)
+        # loss = self.criterion(logits, labels)
         logits, gating_probs = self.model(text1, text2)
         loss = self.criterion(logits, labels, gating_probs)
 
