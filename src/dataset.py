@@ -7,7 +7,7 @@ from torch.utils.data import Dataset
 from datasets import load_dataset
 import nltk
 
-from config import config
+from src.config import config
 
 
 # Download WordNet data if not already downloaded

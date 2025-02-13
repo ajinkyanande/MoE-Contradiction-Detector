@@ -8,10 +8,10 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 import pytorch_lightning as pl
 
-from config import config
-from dataset import SNLIDataset, collate_fn
-# from simple_model import SimpleContradictionClassifier
-from moe_model import MoEContradictionClassifier
+from src.config import config
+from src.dataset import SNLIDataset, collate_fn
+# from src.simple_model import SimpleContradictionClassifier
+from src.moe_model import MoEContradictionClassifier
 
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"

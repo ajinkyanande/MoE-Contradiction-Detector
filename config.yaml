@@ -101,6 +101,9 @@ inference:
   # Previous model / checkpoint to load for inference
   pretrained_model_path: "logs/checkpoints/MoE-SNLI-2025-02-12_22-42-58-epoch=03-val_accuracy=0.900.ckpt"
 
+  # ONNX model path to export and load for inference
+  onnx_model_path: "logs/MoE-SNLI.onnx"
+
 logging:
   log_dir: "logs"
   checkpoint_dir: "logs/checkpoints"

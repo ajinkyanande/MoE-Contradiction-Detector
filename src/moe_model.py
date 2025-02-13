@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from transformers import AutoModel, AutoTokenizer
 from peft import LoraConfig, get_peft_model
 
-from config import config
+from src.config import config
 
 
 class MoEContradictionClassifier(nn.Module):
