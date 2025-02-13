@@ -1,8 +1,4 @@
 simple_model:
-  # Previous model / checkpoint to continue training from
-  # model params below are ignored if this is set
-  pretrained_model_path: null
-
   tokenizer:
     model: "microsoft/MiniLM-L12-H384-uncased"
     max_length: 128
@@ -10,14 +6,9 @@ simple_model:
   # Base model for embedding sentence
   base_encoder_model: "microsoft/MiniLM-L12-H384-uncased"
 
-  # Layers to freeze for the base model during training
-  # positive value means from the start, negative value means from the end
-  # "all" is freezing all layers
-  num_layers_to_freeze: -3
-
   # LoRA parameters for the model
-  lora_r: 16
-  lora_alpha: 32
+  lora_r: 32
+  lora_alpha: 64
   lora_dropout: 0.1
   lora_target_modules: ["query", "key", "value"]
 
@@ -26,46 +17,25 @@ simple_model:
   classifier_dropout: 0.1
 
 moe_model:
-  # Previous model / checkpoint to continue training from
-  # model params below are ignored if this is set
-  pretrained_model_path: null
+  tokenizer:
+    model: "microsoft/MiniLM-L12-H384-uncased"
+    max_length: 128
+
+  # Base model for embedding sentence
+  base_encoder_model: "microsoft/MiniLM-L12-H384-uncased"
 
   # LoRA parameters for the expert models
-  lora_r: 16
-  lora_alpha: 32
+  lora_r: 32
+  lora_alpha: 64
   lora_dropout: 0.1
   lora_target_modules: ["query", "key", "value"]
 
   gating_network:
-    tokenizer:
-      model: "microsoft/MiniLM-L12-H384-uncased"
-      max_length: 128
-
-    # Base models for embedding sentence for the gating network
-    base_encoder_model: "microsoft/MiniLM-L12-H384-uncased"
-
-    # Layers to freeze for the base model during training
-    # positive value means from the start, negative value means from the end
-    # "all" is freezing all layers
-    num_layers_to_freeze: -3
-
     # Classifier to select experts
     hidden_dims: [256, 128, 64]
     dropout: 0.1
 
   experts_network:
-    tokenizer:
-      model: "microsoft/MiniLM-L12-H384-uncased"
-      max_length: 128
-
-    # Base models for embedding sentence for the expert network
-    base_encoder_model: "microsoft/MiniLM-L12-H384-uncased"
-
-    # Layers to freeze for the base model during training
-    # positive value means from the start, negative value means from the end
-    # "all" is freezing all layers
-    num_layers_to_freeze: -3
-
     # Number of experts and top_k experts to activate
     num_experts: 4
     top_k: 2
@@ -76,12 +46,31 @@ moe_model:
 
 data:
   hf_dataset: "stanfordnlp/snli"
-  training_subset: 1.0
+
+  train_subset: 1.0
   validation_subset: 1.0
+  test_subset: 1.0
+
+  noise:
+    # Defines if and what type of noise to add
+    apply_prob: 0.3  # chances of applying noise to a sample
+
+    # For the selected noise type it is fully random (e.g., characters at random positions are swapped)
+    insert_prob: 0.2  # randomly selected character inserted at random position
+    swap_prob: 0.2  # randomly selected consecutive characters swapped
+    replace_prob: 0.2  # randomly selected character replaced with another character
+    delete_prob: 0.2  # randomly selected characters deleted
+    synonym_prob: 0.1  # randomly selected word replaced with a synonym using wordnet
+
+  # Batch size for training and validation
+  # 128 batch size causes Out of Memory error on 8GB GPU
+  batch_size: 64
 
 training:
+  # Previous model / checkpoint to continue training from
+  pretrained_model_path: null
+
   epochs: 25
-  batch_size: 64
   accumulate_grad_batches: 16
 
   lr:
@@ -89,18 +78,18 @@ training:
     scheduler_type: "cosine_annealing_warm_restarts"
 
     cosine_annealing:
-      lr_end: 0.00001
       T_max: 25
+      eta_min: 0.00001
 
     cosine_annealing_warm_restarts:
-      lr_end: 0.00001
       T_0: 5
       T_mult: 4
+      eta_min: 0.00001
 
     reduce_on_plateau:
+      factor: 0.5
       patience: 2
       threshold: 0.0001
-      factor: 0.5
 
   # Encourages diversity in the expert selection
   diversity_loss_weight: 0.2
@@ -109,7 +98,8 @@ training:
   mixed_precision: "16-mixed"
 
 inference:
-  best_model_path: "models/best_model.pth"
+  # Previous model / checkpoint to load for inference
+  pretrained_model_path: "logs/checkpoints/MoE-SNLI-2025-02-12_22-42-58-epoch=03-val_accuracy=0.900.ckpt"
 
 logging:
   log_dir: "logs"

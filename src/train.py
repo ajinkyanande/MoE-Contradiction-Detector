@@ -13,16 +13,13 @@ from dataset import SNLIDataset, collate_fn
 # from simple_model import SimpleContradictionClassifier
 from moe_model import MoEContradictionClassifier
 
+
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 torch.set_float32_matmul_precision('high')
 
 
-class SNLIModel(pl.LightningModule):
-    """
-    PyTorch Lightning module for training on the SNLI dataset.
-    """
-
+class SNLITrainer(pl.LightningModule):
     def __init__(self):
         super().__init__()
 
@@ -33,10 +30,10 @@ class SNLIModel(pl.LightningModule):
         self.model = MoEContradictionClassifier()
         self.lr = config["training"]["lr"]["lr_start"]
 
-    def forward(self, text1, text2):
-        return self.model(text1, text2)
+    def forward(self, text1s, text2s):
+        return self.model(text1s, text2s)
 
-    def criterion(self, logits, labels, gating_probs):
+    def criterion(self, logits, labels, gating_probs=None):
         """
         Combined loss: CrossEntropy + Expert Diversity Loss
         """
@@ -50,25 +47,22 @@ class SNLIModel(pl.LightningModule):
         """
         Single training step.
         """
-        if batch_idx % 50 == 0:
-            gc.collect()
-            torch.cuda.empty_cache()
+        # if batch_idx % 50 == 0:
+        #     gc.collect()
+        #     torch.cuda.empty_cache()
 
-        text1, text2, labels = batch
-        # logits = self.model(text1, text2)
+        text1s, text2s, labels = batch
+        # logits = self.model(text1s, text2s)
         # loss = self.criterion(logits, labels)
-        logits, gating_probs = self.model(text1, text2)
+        logits, gating_probs = self.model(text1s, text2s)
         loss = self.criterion(logits, labels, gating_probs)
 
         preds = torch.argmax(logits, dim=1)
-        accuracy = (preds == labels).float().mean().detach().cpu()
+        accuracy = (preds == labels).float().mean()
 
-        self.log("train_loss", loss.detach(), prog_bar=True)
+        self.log("train_loss", loss, prog_bar=True)
         self.log("train_accuracy", accuracy, prog_bar=True)
-
-        # Log learning rate safely
-        current_lr = self.trainer.optimizers[0].param_groups[0]["lr"]
-        self.log("learning_rate", current_lr, prog_bar=True)
+        self.log("learning_rate", self.trainer.optimizers[0].param_groups[0]["lr"], prog_bar=True)
 
         return loss
 
@@ -76,20 +70,20 @@ class SNLIModel(pl.LightningModule):
         """
         Single validation step.
         """
-        if batch_idx % 50 == 0:
-            gc.collect()
-            torch.cuda.empty_cache()
+        # if batch_idx % 50 == 0:
+        #     gc.collect()
+        #     torch.cuda.empty_cache()
 
-        text1, text2, labels = batch
-        # logits = self.model(text1, text2)
+        text1s, text2s, labels = batch
+        # logits = self.model(text1s, text2s)
         # loss = self.criterion(logits, labels)
-        logits, gating_probs = self.model(text1, text2)
+        logits, gating_probs = self.model(text1s, text2s)
         loss = self.criterion(logits, labels, gating_probs)
 
         preds = torch.argmax(logits, dim=1)
-        accuracy = (preds == labels).float().mean().detach().cpu()
+        accuracy = (preds == labels).float().mean()
 
-        self.log("val_loss", loss.detach(), prog_bar=True)
+        self.log("val_loss", loss, prog_bar=True)
         self.log("val_accuracy", accuracy, prog_bar=True)
 
         return loss
@@ -108,7 +102,7 @@ class SNLIModel(pl.LightningModule):
             scheduler = optim.lr_scheduler.CosineAnnealingLR(
                 optimizer,
                 T_max=config["training"]["lr"]["cosine_annealing"]["T_max"],
-                eta_min=config["training"]["lr"]["cosine_annealing"]["lr_end"],
+                eta_min=config["training"]["lr"]["cosine_annealing"]["eta_min"],
                 verbose=True,
             )
             return {"optimizer": optimizer, "lr_scheduler": scheduler}
@@ -118,7 +112,7 @@ class SNLIModel(pl.LightningModule):
                 optimizer,
                 T_0=config["training"]["lr"]["cosine_annealing_warm_restarts"]["T_0"],
                 T_mult=config["training"]["lr"]["cosine_annealing_warm_restarts"]["T_mult"],
-                eta_min=config["training"]["lr"]["cosine_annealing_warm_restarts"]["lr_end"],
+                eta_min=config["training"]["lr"]["cosine_annealing_warm_restarts"]["eta_min"],
                 verbose=True,
             )
             return {"optimizer": optimizer, "lr_scheduler": scheduler}
@@ -142,45 +136,43 @@ class SNLIModel(pl.LightningModule):
 
 
 if __name__ == "__main__":
-    # Set up device
+    # Set device
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    # Load datasets
     train_dataset = SNLIDataset(split="train")
-    val_dataset = SNLIDataset(split="validation")
-
     train_loader = DataLoader(
         train_dataset,
-        batch_size=config["training"]["batch_size"],
+        batch_size=config["data"]["batch_size"],
         shuffle=True,
         collate_fn=collate_fn,
         num_workers=2,
     )
+
+    val_dataset = SNLIDataset(split="validation")
     val_loader = DataLoader(
         val_dataset,
-        batch_size=config["training"]["batch_size"],
+        batch_size=config["data"]["batch_size"],
         shuffle=False,
         collate_fn=collate_fn,
         num_workers=2,
     )
 
     # # Check for pretrained model checkpoint
-    # if config["simple_model"]["pretrained_model_path"] and os.path.exists(config["simple_model"]["pretrained_model_path"]):
-    #     print(f"Loading model from checkpoint: {config['simple_model']['pretrained_model_path']}")
-    #     model_wrapper = SNLIModel.load_from_checkpoint(config["simple_model"]["pretrained_model_path"])
+    # if config["training"]["pretrained_model_path"] and os.path.exists(config["training"]["pretrained_model_path"]):
+    #     print(f"Loading model from checkpoint: {config['training']['pretrained_model_path']}")
+    #     model_wrapper = SNLIModel.load_from_checkpoint(config["training"]["pretrained_model_path"])
     # else:
     #     print("No pretrained model found. Initializing a new model.")
     #     model_wrapper = SNLIModel()
 
     # Check for pretrained model checkpoint
-    if config["moe_model"]["pretrained_model_path"] and os.path.exists(config["moe_model"]["pretrained_model_path"]):
-        print(f"Loading model from checkpoint: {config['moe_model']['pretrained_model_path']}")
-        model_wrapper = SNLIModel.load_from_checkpoint(config["moe_model"]["pretrained_model_path"])
+    if config["training"]["pretrained_model_path"] and os.path.exists(config["training"]["pretrained_model_path"]):
+        print(f"Loading model from checkpoint: {config['training']['pretrained_model_path']}")
+        model_wrapper = SNLITrainer.load_from_checkpoint(config["training"]["pretrained_model_path"])
     else:
         print("No pretrained model found. Initializing a new model.")
-        model_wrapper = SNLIModel()
+        model_wrapper = SNLITrainer()
 
-    # Initialize Trainer
     trainer = pl.Trainer(
         max_epochs=config["training"]["epochs"],
         logger=pl.loggers.WandbLogger(project="SNLI", reinit=True),

@@ -5,7 +5,6 @@ from transformers import AutoModel, AutoTokenizer
 from peft import LoraConfig, get_peft_model
 
 from config import config
-from utils import freeze_layers
 
 
 class SimpleContradictionClassifier(nn.Module):
@@ -27,16 +26,13 @@ class SimpleContradictionClassifier(nn.Module):
         # Load tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(config["simple_model"]["tokenizer"]["model"])
 
-        # Load base  encoder
+        # Load base encoder
         base_encoder = AutoModel.from_pretrained(config["simple_model"]["base_encoder_model"])
 
-        # Freeze the  encoder
-        freeze_layers(base_encoder, config["simple_model"]["num_layers_to_freeze"])
-
-        # Apply LoRA to  encoder
+        # Apply LoRA to encoder
         self.encoder = get_peft_model(base_encoder, lora_config)
 
-        # Classifier (takes weighted sum of  outputs and outputs logits)
+        # Classifier (takes weighted sum ofoutputs and outputs logits)
         input_dim = self.encoder.config.hidden_size
         layers = []
 
@@ -50,24 +46,24 @@ class SimpleContradictionClassifier(nn.Module):
         # Add output layer
         self.classifier_net = nn.Sequential(*layers, nn.Linear(input_dim, output_dim))
 
-    def forward(self, text1, text2):
+    def forward(self, text1s, text2s):
         """
-        text1: (batch_size, seq_len1)
-        text2: (batch_size, seq_len2)
+        text1s: (batch_size, seq_len1)
+        text2s: (batch_size, seq_len2)
         """
         device = next(self.parameters()).device
 
         # Ensure inputs are lists
-        if isinstance(text1, str):
-            text1 = [text1]
-        if isinstance(text2, str):
-            text2 = [text2]
-        assert len(text1) == len(text2), "Input lists must have the same length."
+        if isinstance(text1s, str):
+            text1s = [text1s]
+        if isinstance(text2s, str):
+            text2s = [text2s]
+        assert len(text1s) == len(text2s), "Input lists must have the same length."
 
         # Tokenize inputs
         inputs = self.tokenizer(
-            text1,
-            text2,
+            text1s,
+            text2s,
             return_tensors="pt",
             padding=True,
             truncation=True,
@@ -77,7 +73,7 @@ class SimpleContradictionClassifier(nn.Module):
         attention_mask = inputs["attention_mask"].to(device)  # (batch_size, seq_len)
 
         # Forward pass through encoder and get [CLS] token representation
-        out = self.encoder(input_ids, attention_mask=attention_mask)
+        out = self.encoder(input_ids, attention_mask=attention_mask)  # (batch_size, seq_len, hidden_size)
         cls_embds = out.last_hidden_state[:, 0, :]  # (batch_size, hidden_size)
 
         # Forward pass through classifier
@@ -86,17 +82,34 @@ class SimpleContradictionClassifier(nn.Module):
         return logits
 
 
+def print_model_params(model: nn.Module):
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    frozen_params = total_params - trainable_params
+    print(f"Total Params: {total_params} | Trainable: {trainable_params} | Frozen: {frozen_params}")
+
+
+def print_unfrozen_params(model: nn.Module):
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            print(f"Unfrozen Param: {name}")
+
+
 if __name__ == "__main__":
+    # Set device
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
     # Set seed for reproducibility
     torch.manual_seed(0)
 
     model = SimpleContradictionClassifier()
+    model.to(device)
     print("Model initialized:\n", model)
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    model.to(device)
+    print_model_params(model)
+    print_unfrozen_params(model)
 
-    text1_batch = [
+    text1s = [
         "The sky is blue.",
         "She likes coffee.",
         "The cat is sleeping.",
@@ -113,7 +126,7 @@ if __name__ == "__main__":
         "I am a teacher.",
         "I am a student in Carnegie Mellon University in Pittsburgh, Pennsylvania studying computer science.",
     ]
-    text2_batch = [
+    text2s= [
         "The sky is red.",
         "She likes tea.",
         "The cat is playing.",
@@ -132,6 +145,6 @@ if __name__ == "__main__":
     ]
 
     with torch.no_grad():
-        logits = model(text1_batch, text2_batch)
+        logits = model(text1s, text2s)
 
     print(logits)
