@@ -98,10 +98,10 @@ text2 = st.text_area("Comparison Text (To Be Verified)", default_text2, height=2
 
 if st.button("Analyze Text for Consistency"):
     if text1 and text2:
-        st.write("🔄 **Processing...**")
-
-        # Fetch comparison results
-        result = fetch_comparison(text1, text2)
+        # Display processing message and remove once results are ready
+        with st.spinner("Analyzing text for consistency..."):
+            # Fetch comparison results
+            result = fetch_comparison(text1, text2)
 
         if result:
             entailments = result.get("entailment_groups", {})
