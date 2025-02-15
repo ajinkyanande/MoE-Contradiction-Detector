@@ -1,7 +1,8 @@
 **__pycache__/
-.vscode/*
-logs/*
-wandb/*
+.vscode/
+logs/
+wandb/
+models/
 
 .~lock.*
 *.txt

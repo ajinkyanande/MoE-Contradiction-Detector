@@ -1,5 +1,4 @@
 import os
-import gc
 from datetime import datetime
 
 import torch
@@ -14,8 +13,11 @@ from src.dataset import SNLIDataset, collate_fn
 from src.moe_model import MoEContradictionClassifier
 
 
+# Set environment variables
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+
+# Set torch precision
 torch.set_float32_matmul_precision('high')
 
 
@@ -30,8 +32,8 @@ class SNLITrainer(pl.LightningModule):
         self.model = MoEContradictionClassifier()
         self.lr = config["training"]["lr"]["lr_start"]
 
-    def forward(self, text1s, text2s):
-        return self.model(text1s, text2s)
+    def forward(self, input_ids, attention_mask, traceable=False):
+        return self.model(input_ids, attention_mask, traceable=traceable)
 
     def criterion(self, logits, labels, gating_probs=None):
         """
@@ -51,12 +53,18 @@ class SNLITrainer(pl.LightningModule):
         #     gc.collect()
         #     torch.cuda.empty_cache()
 
-        text1s, text2s, labels = batch
-        # logits = self.model(text1s, text2s)
+        # Get the model inputs
+        input_ids, attention_mask, labels = batch
+
+        # Forward pass
+        # logits = self.model(input_ids, attention_mask)
+        logits, gating_probs = self.model(input_ids, attention_mask)
+
+        # Calculate loss
         # loss = self.criterion(logits, labels)
-        logits, gating_probs = self.model(text1s, text2s)
         loss = self.criterion(logits, labels, gating_probs)
 
+        # Calculate accuracy
         preds = torch.argmax(logits, dim=1)
         accuracy = (preds == labels).float().mean()
 
@@ -74,12 +82,18 @@ class SNLITrainer(pl.LightningModule):
         #     gc.collect()
         #     torch.cuda.empty_cache()
 
-        text1s, text2s, labels = batch
-        # logits = self.model(text1s, text2s)
+        # Get the model inputs
+        input_ids, attention_mask, labels = batch
+
+        # Forward pass
+        # logits = self.model(input_ids, attention_mask)
+        logits, gating_probs = self.model(input_ids, attention_mask)
+
+        # Calculate loss
         # loss = self.criterion(logits, labels)
-        logits, gating_probs = self.model(text1s, text2s)
         loss = self.criterion(logits, labels, gating_probs)
 
+        # Calculate accuracy
         preds = torch.argmax(logits, dim=1)
         accuracy = (preds == labels).float().mean()
 
@@ -140,7 +154,7 @@ if __name__ == "__main__":
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     train_dataset = SNLIDataset(split="train")
-    train_loader = DataLoader(
+    train_dataloader = DataLoader(
         train_dataset,
         batch_size=config["data"]["batch_size"],
         shuffle=True,
@@ -149,7 +163,7 @@ if __name__ == "__main__":
     )
 
     val_dataset = SNLIDataset(split="validation")
-    val_loader = DataLoader(
+    val_dataloader = DataLoader(
         val_dataset,
         batch_size=config["data"]["batch_size"],
         shuffle=False,
@@ -194,4 +208,4 @@ if __name__ == "__main__":
     )
 
     # Train Model
-    trainer.fit(model_wrapper, train_loader, val_loader)
+    trainer.fit(model_wrapper, train_dataloader, val_dataloader)

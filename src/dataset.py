@@ -4,6 +4,7 @@ import string
 import numpy as np
 import torch
 from torch.utils.data import Dataset
+from transformers import AutoModel, AutoTokenizer
 from datasets import load_dataset
 import nltk
 
@@ -35,6 +36,9 @@ class SNLIDataset(Dataset):
             subset_ratio = config["data"]["test_subset"]
         else:
             raise ValueError(f"Invalid split: {self.split}")
+
+        # Remove samples with label -1 (entailment, neutral, contradiction)
+        self.dataset = self.dataset.filter(lambda x: x["label"] != -1)
 
         # Apply subset ratio
         subset_size = int(len(self.dataset) * subset_ratio)
@@ -116,21 +120,43 @@ class SNLIDataset(Dataset):
         text1 = self.dataset[self.indices[idx].item()]["premise"]
         text2 = self.dataset[self.indices[idx].item()]["hypothesis"]
         label = self.dataset[self.indices[idx].item()]["label"]
+        assert label in [0, 1, 2], f"Invalid label: {label} for split {self.split}"
 
         # Apply noise with defined probabilities
         if self.split == "train":
             text1 = self.add_noise(text1)
             text2 = self.add_noise(text2)
 
-        return (text1, text2, label) if label != -1 else None
+        return (text1, text2, label)
+
+
+# Load base encoder tokenizer
+_tokenizer = AutoTokenizer.from_pretrained(config["simple_model"]["tokenizer"]["model"])
+
+
+def tokenize(text1, text2):
+    """
+    Tokenize text inputs using the base encoder tokenizer.
+    """
+    inputs = _tokenizer(
+        text1,
+        text2,
+        return_tensors="pt",
+        padding=True,
+        truncation=True,
+        max_length=config["simple_model"]["tokenizer"]["max_length"],
+    )
+    return inputs["input_ids"], inputs["attention_mask"]
 
 
 def collate_fn(batch):
-    batch = [b for b in batch if b is not None]
-    if not batch:
-        return [], [], torch.tensor([])
+    if len(batch) == 0:
+        return None
 
     # Split [(text1, text2, label)] into [text1], [text2], [label]
     text1s, text2s, labels = zip(*batch)
 
-    return text1s, text2s, torch.tensor(labels)
+    # Tokenize inputs
+    input_ids, attention_mask = tokenize(text1s, text2s)
+
+    return input_ids, attention_mask, torch.tensor(labels)

@@ -14,17 +14,70 @@ from src.train import SNLITrainer
 # Set device
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-
 # Global model instances
+torch_embedding_model = None
 torch_model = None
+ort_embedding_session = None
 ort_session = None
+
+# Labels
+LABELS = {0: "entailment", 1: "neutral", 2: "contradiction"}
+
+
+def low_confidence_fallback(preds_confs: list[tuple[str, float]], fallback_label: int = 1) -> list[tuple[str, float]]:
+    """
+    Fallback to low confidence predictions if confidence is below a certain threshold.
+
+    Args:
+        preds_confs (list[tuple[str, float]]): Predicted labels with confidence scores.
+        fallback_label (int): Label to fallback to if confidence is below threshold.
+
+    Returns:
+        list[tuple[str, float]]: Predicted labels with confidence scores.
+    """
+    return [
+        (label, conf)
+        if conf >= config["inference"]["confidence_threshold"]
+        else (LABELS[fallback_label], conf)
+        for label, conf in preds_confs
+    ]
+
+
+def dummy_inference(full_text1s: list[str], full_text2s: list[str]) -> list[tuple[str, float]]:
+    """
+    Runs dummy inference that returns random predictions.
+
+    Args:
+        full_text1s (list[str]): First set of sentences.
+        full_text2s (list[str]): Second set of sentences.
+
+    Returns:
+        list[tuple[str, float]]: Predicted labels with confidence scores.
+    """
+    if not full_text1s or not full_text2s:
+        raise ValueError("Input texts cannot be empty.")
+
+    full_preds = []
+    full_confs = []
+
+    for _, _ in zip(full_text1s, full_text2s):
+        # Dummy forward pass through the model
+        logits = torch.rand(3)
+        probs = F.softmax(logits, dim=-1)
+
+        # Get predictions and confidence scores
+        confs, preds = torch.max(probs, dim=-1)
+
+        full_confs.append(confs.item())
+        full_preds.append(preds.item())
+
+    return list(zip([LABELS[p] for p in full_preds], full_confs))
 
 
 def load_torch_model():
     global torch_model
     if torch_model is None:
-        torch_model = SNLITrainer.load_from_checkpoint(config["inference"]["pretrained_model_path"])
-        torch_model.freeze()
+        torch_model = SNLITrainer.load_from_checkpoint(config["inference"]["pretrained_model_path"]).model
         torch_model.to(device)
 
 
@@ -33,61 +86,107 @@ def load_onnx_model():
     global ort_session
     if ort_session is None:
         ort_session = ort.InferenceSession(config["inference"]["onnx_model_path"])
-        ort_session.set_providers(["CPUExecutionProvider"])
+        if device == "cpu":
+            ort_session.set_providers(["CPUExecutionProvider"])
+        elif device == "cuda":
+            ort_session.set_providers(["CUDAExecutionProvider"])
+        else:
+            raise ValueError(f"Unknown device: {device}")
 
 
-def torch_inference(text1s, text2s):
+def torch_inference(full_text1s: list[str], full_text2s: list[str]) -> list[tuple[str, float]]:
     """
-    Runs batch inference on text pairs using PyTorch.
+    Runs batch inference on sentence pairs using a PyTorch model.
+
+    Args:
+        full_text1s (list[str]): First set of sentences.
+        full_text2s (list[str]): Second set of sentences.
+
+    Returns:
+        list[tuple[str, float]]: Predicted labels with confidence scores.
     """
+    if not full_text1s or not full_text2s or len(full_text1s) != len(full_text2s):
+        raise ValueError("Input texts cannot be empty and must have the same length.")
+
     if torch_model is None:
-        raise RuntimeError("PyTorch model is not loaded. Call `load_torch_model()` first.")
+        load_torch_model()
 
-    dataset = list(zip(text1s, text2s))
-    dataloader = DataLoader(dataset, batch_size=config["data"]["batch_size"], shuffle=False, collate_fn=collate_fn)
+    dataset = list(zip(full_text1s, full_text2s, [-1] * len(full_text1s)))
+    dataloader = DataLoader(
+        dataset,
+        batch_size=config["data"]["batch_size"],
+        shuffle=False,
+        collate_fn=collate_fn,
+        num_workers=2,
+    )
 
-    # Run inference batch-wise
-    preds_list = []
+    full_preds = []
+    full_confs = []
 
-    with torch.no_grad():
+    with torch.inference_mode():
         for batch in dataloader:
-            text1s, text2s = batch
-            logits, _ = torch_model(text1s, text2s)
-            preds = torch.argmax(F.softmax(logits, dim=1), dim=1)
-            preds_list.extend(preds.cpu().numpy().tolist())
+            # Get the model inputs
+            input_ids, attention_mask, _ = batch
+            input_ids = input_ids.to(device)
+            attention_mask = attention_mask.to(device)
 
-    return preds_list
+            # Forward pass through the model
+            logits, _ = torch_model(input_ids, attention_mask)
+            probs = F.softmax(logits, dim=-1)
+
+            # Get predictions and confidence scores
+            confs, preds = torch.max(probs, dim=-1)
+
+            full_confs.extend(confs.tolist())
+            full_preds.extend(preds.tolist())
+
+    return list(zip([LABELS[p] for p in full_preds], full_confs))
 
 
-def onnx_inference(text1s, text2s):
+def onnx_inference(full_text1s: list[str], full_text2s: list[str]) -> list[tuple[str, float]]:
     """
-    Runs batch inference on text pairs using ONNX runtime.
+    Runs batch inference on sentence pairs using an ONNX model.
+
+    Args:
+        full_text1s (list[str]): First set of sentences.
+        full_text2s (list[str]): Second set of sentences.
+
+    Returns:
+        list[tuple[str, float]]: Predicted labels with confidence scores.
     """
+    if not full_text1s or not full_text2s or len(full_text1s) != len(full_text2s):
+        raise ValueError("Input texts cannot be empty and must have the same length.")
+
     if ort_session is None:
-        raise RuntimeError("ONNX model is not loaded. Call `load_onnx_model()` first.")
+        load_onnx_model()
 
-    text1s = np.array(text1s, dtype=np.float32)
-    text2s = np.array(text2s, dtype=np.float32)
+    # Convert text input into numpy arrays
+    text1s = np.array(full_text1s, dtype=np.object_)
+    text2s = np.array(full_text2s, dtype=np.object_)
 
-    ort_inputs = {
-        ort_session.get_inputs()[0].name: text1s,
-        ort_session.get_inputs()[1].name: text2s,
-    }
+    # Get the model inputs
+    ort_inputs = {"text1s": text1s, "text2s": text2s}
 
+    # Forward pass through the model
     ort_outs = ort_session.run(None, ort_inputs)
-    preds = np.argmax(ort_outs[0], axis=1)
+    logits = ort_outs[0]
+    probs = F.softmax(torch.tensor(logits), dim=-1)
 
-    return preds.tolist()
+    # Get predictions and confidence scores
+    confs, preds = torch.max(probs, dim=-1)
+
+    return list(zip([LABELS[p] for p in preds.tolist()], confs.tolist()))
 
 
-def testing():
+def testing_torch():
     """
     Runs inference on the test set and prints evaluation metrics.
     """
-    load_torch_model()
+    if torch_model is None:
+        load_torch_model()
 
     test_dataset = SNLIDataset(split="test")
-    test_loader = DataLoader(
+    test_dataloader = DataLoader(
         test_dataset,
         batch_size=config["data"]["batch_size"],
         shuffle=False,
@@ -95,19 +194,32 @@ def testing():
         num_workers=2,
     )
 
-    preds_list = []
-    labels_list = []
+    full_preds = []
+    full_labels = []
 
-    with torch.no_grad():
-        for batch in tqdm(test_loader):
-            text1s, text2s, labels = batch
-            preds = torch_inference(text1s, text2s)
-            preds_list.extend(preds)
-            labels_list.extend(labels.cpu().numpy().tolist())
+    with torch.inference_mode():
+        for batch in tqdm(test_dataloader, desc="Testing"):
+            # Get the model inputs
+            input_ids, attention_mask, labels = batch
+            input_ids = input_ids.to(device)
+            attention_mask = attention_mask.to(device)
+            labels = labels.to(device)
 
-    accuracy = accuracy_score(labels_list, preds_list)
-    precision, recall, f1, _ = precision_recall_fscore_support(labels_list, preds_list, average="weighted")
-    confusion = confusion_matrix(labels_list, preds_list)
+            # Forward pass through the model
+            # logits = torch_model(input_ids, attention_mask)
+            logits, _ = torch_model(input_ids, attention_mask)
+            probs = F.softmax(logits, dim=-1)
+
+            # Get predictions and confidences
+            _, preds = torch.max(probs, dim=-1)
+
+            full_preds.extend(preds.cpu().numpy())
+            full_labels.extend(labels.cpu().numpy())
+
+    # Calculate evaluation metrics
+    accuracy = accuracy_score(full_labels, full_preds)
+    precision, recall, f1, _ = precision_recall_fscore_support(full_labels, full_preds, average="weighted")
+    confusion = confusion_matrix(full_labels, full_preds)
 
     print(f"Accuracy: {accuracy}")
     print(f"Precision: {precision}")
@@ -116,5 +228,63 @@ def testing():
     print(f"Confusion Matrix:\n{confusion}")
 
 
+def testing_onnx():
+    """
+    Runs inference on the test set and prints evaluation metrics.
+    """
+    if ort_session is None:
+        load_onnx_model()
+
+    test_dataset = SNLIDataset(split="test")
+    test_dataloader = DataLoader(
+        test_dataset,
+        batch_size=config["data"]["batch_size"],
+        shuffle=False,
+        collate_fn=collate_fn,
+        num_workers=2,
+    )
+
+    full_preds = []
+    full_labels = []
+
+    for batch in tqdm(test_dataloader, desc="Testing"):
+        # Get the model inputs
+        input_ids, attention_mask, labels = batch
+
+        # Convert inputs to numpy
+        input_ids_np = input_ids.numpy()
+        attention_mask_np = attention_mask.numpy()
+
+        # Prepare ONNX inputs
+        ort_inputs = {
+            "input_ids": input_ids_np,
+            "attention_mask": attention_mask_np
+        }
+
+        # Forward pass through ONNX model
+        ort_outs = ort_session.run(None, ort_inputs)
+        logits, _ = ort_outs
+        probs = F.softmax(torch.tensor(logits), dim=-1)
+
+        # Get predictions
+        preds = torch.argmax(probs, dim=-1)
+
+        full_preds.extend(preds.cpu().numpy())
+        full_labels.extend(labels.cpu().numpy())
+
+    # Compute evaluation metrics
+    accuracy = accuracy_score(full_labels, full_preds)
+    precision, recall, f1, _ = precision_recall_fscore_support(full_labels, full_preds, average="weighted")
+    confusion = confusion_matrix(full_labels, full_preds)
+
+    # Print evaluation results
+    print(f"Accuracy: {accuracy:.4f}")
+    print(f"Precision: {precision:.4f}")
+    print(f"Recall: {recall:.4f}")
+    print(f"F1 Score: {f1:.4f}")
+    print(f"Confusion Matrix:\n{confusion}")
+
+
 if __name__ == "__main__":
-    testing()
+    testing_torch()
+    # testing_onnx()

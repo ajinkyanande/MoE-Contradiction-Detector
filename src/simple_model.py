@@ -9,7 +9,7 @@ from src.config import config
 
 class SimpleContradictionClassifier(nn.Module):
     """
-    Simple classifier for contradiction classification.
+    Simple Entailment and Contradiction Classifier.
     """
 
     def __init__(self, output_dim=3):
@@ -23,63 +23,39 @@ class SimpleContradictionClassifier(nn.Module):
             target_modules=config["simple_model"]["lora_target_modules"],
         )
 
-        # Load tokenizer
-        self.tokenizer = AutoTokenizer.from_pretrained(config["simple_model"]["tokenizer"]["model"])
-
         # Load base encoder
         base_encoder = AutoModel.from_pretrained(config["simple_model"]["base_encoder_model"])
 
-        # Apply LoRA to encoder
+        # Get encoder by applying LoRA adapters to the base encoder
         self.encoder = get_peft_model(base_encoder, lora_config)
 
-        # Classifier (takes weighted sum ofoutputs and outputs logits)
-        input_dim = self.encoder.config.hidden_size
-        layers = []
+        # Define hidden layers for classifier
+        input_dim = base_encoder.config.hidden_size
+        hidden_classifier_layers = []
 
         for hidden_dim in config["simple_model"]["classifier_hidden_dims"]:
-            layers.append(nn.Linear(input_dim, hidden_dim))
-            layers.append(nn.LayerNorm(hidden_dim))
-            layers.append(nn.ReLU())
-            layers.append(nn.Dropout(config["simple_model"]["classifier_dropout"]))
+            hidden_classifier_layers.append(nn.Linear(input_dim, hidden_dim))
+            hidden_classifier_layers.append(nn.LayerNorm(hidden_dim))
+            hidden_classifier_layers.append(nn.GELU())
+            hidden_classifier_layers.append(nn.Dropout(config["simple_model"]["classifier_dropout"]))
             input_dim = hidden_dim
 
-        # Add output layer
-        self.classifier_net = nn.Sequential(*layers, nn.Linear(input_dim, output_dim))
+        # Define classifier network
+        self.classifier_net = nn.Sequential(*hidden_classifier_layers, nn.Linear(input_dim, output_dim))
 
-    def forward(self, text1s, text2s):
+    def forward(self, input_ids, attention_mask):
         """
-        text1s: (batch_size, seq_len1)
-        text2s: (batch_size, seq_len2)
+        input_ids: (batch_size, seq_len)
+        attention_mask: (batch_size, seq_len)
         """
-        device = next(self.parameters()).device
-
-        # Ensure inputs are lists
-        if isinstance(text1s, str):
-            text1s = [text1s]
-        if isinstance(text2s, str):
-            text2s = [text2s]
-        assert len(text1s) == len(text2s), "Input lists must have the same length."
-
-        # Tokenize inputs
-        inputs = self.tokenizer(
-            text1s,
-            text2s,
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-            max_length=config["simple_model"]["tokenizer"]["max_length"],
-        )
-        input_ids = inputs["input_ids"].to(device)  # (batch_size, seq_len)
-        attention_mask = inputs["attention_mask"].to(device)  # (batch_size, seq_len)
-
         # Forward pass through encoder and get [CLS] token representation
         out = self.encoder(input_ids, attention_mask=attention_mask)  # (batch_size, seq_len, hidden_size)
         cls_embds = out.last_hidden_state[:, 0, :]  # (batch_size, hidden_size)
 
-        # Forward pass through classifier
-        logits = self.classifier_net(cls_embds)  # (batch_size, output_dim)
+        # Forward pass through classifier network
+        classifier_logits = self.classifier_net(cls_embds)  # (batch_size, output_dim)
 
-        return logits
+        return classifier_logits
 
 
 def print_model_params(model: nn.Module):
@@ -144,7 +120,23 @@ if __name__ == "__main__":
         "I am a teacher in University of California, Berkeley studying mechanical engineering for my PhD.",
     ]
 
+    # Load base encoder tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(config["simple_model"]["tokenizer"]["model"])
+
+    # Tokenize inputs
+    inputs = tokenizer(
+        text1s,
+        text2s,
+        return_tensors="pt",
+        padding=True,
+        truncation=True,
+        max_length=config["moe_model"]["tokenizer"]["max_length"],
+    )
+    input_ids = inputs["input_ids"].to(device)  # (batch_size, seq_len)
+    attention_mask = inputs["attention_mask"].to(device)  # (batch_size, seq_len)
+
     with torch.no_grad():
-        logits = model(text1s, text2s)
+        logits, gating_probs = model(input_ids, attention_mask)
 
     print(logits)
+    print(gating_probs)

@@ -68,7 +68,8 @@ data:
 
 training:
   # Previous model / checkpoint to continue training from
-  pretrained_model_path: null
+  # simple_model / moe_model parameters are ignored if pretrained_model_path is provided
+  pretrained_model_path: "models/MoE-SNLI-0213-900.ckpt"
 
   epochs: 25
   accumulate_grad_batches: 16
@@ -99,10 +100,24 @@ training:
 
 inference:
   # Previous model / checkpoint to load for inference
-  pretrained_model_path: "logs/checkpoints/MoE-SNLI-2025-02-12_22-42-58-epoch=03-val_accuracy=0.900.ckpt"
+  # simple_model / moe_model parameters are ignored if pretrained_model_path is provided
+  pretrained_model_path: "models/MoE-SNLI-0213-900.ckpt"
 
   # ONNX model path to export and load for inference
-  onnx_model_path: "logs/MoE-SNLI.onnx"
+  onnx_model_path: "models/MoE-SNLI-0213-900.onnx"
+
+  # Threshold for prediction confidence
+  # Fallbacks to neutral if the confidence is below the threshold
+  confidence_threshold: 0.5
+
+backend:
+  # Sentences talking about different topics / subjects are contradictions in SNLI
+  # So similarity search / cosine similarity is used to find the most similar sentence
+  similarity_model: "all-MiniLM-L6-v2"
+
+  # Threshold for similarity search
+  # Sentences with similarity above the threshold are considered for predicting entailment / contradiction
+  similarity_threshold: 0.5
 
 logging:
   log_dir: "logs"
