@@ -10,7 +10,7 @@ simple_model:
   lora_r: 32
   lora_alpha: 64
   lora_dropout: 0.1
-  lora_target_modules: ["query", "key", "value"]
+  lora_target_modules: ["query", "key", "value", "output"]
 
   # Classifier to predict the label
   classifier_hidden_dims: [256, 128, 64]
@@ -69,7 +69,7 @@ data:
 training:
   # Previous model / checkpoint to continue training from
   # simple_model / moe_model parameters are ignored if pretrained_model_path is provided
-  pretrained_model_path: "models/MoE-SNLI-0213-900.ckpt"
+  pretrained_model_path: null
 
   epochs: 25
   accumulate_grad_batches: 16
