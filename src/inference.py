@@ -82,14 +82,12 @@ def load_torch_model():
 
 
 def load_onnx_model():
-    """Loads the ONNX model only once at startup."""
     global ort_session
     if ort_session is None:
-        ort_session = ort.InferenceSession(config["inference"]["onnx_model_path"])
         if device == "cpu":
-            ort_session.set_providers(["CPUExecutionProvider"])
+            ort_session = ort.InferenceSession(config["inference"]["onnx_model_path"], providers=["CPUExecutionProvider"])
         elif device == "cuda":
-            ort_session.set_providers(["CUDAExecutionProvider"])
+            ort_session = ort.InferenceSession(config["inference"]["onnx_model_path"], providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
         else:
             raise ValueError(f"Unknown device: {device}")
 
@@ -160,22 +158,39 @@ def onnx_inference(full_text1s: list[str], full_text2s: list[str]) -> list[tuple
     if ort_session is None:
         load_onnx_model()
 
-    # Convert text input into numpy arrays
-    text1s = np.array(full_text1s, dtype=np.object_)
-    text2s = np.array(full_text2s, dtype=np.object_)
+    dataset = list(zip(full_text1s, full_text2s, [-1] * len(full_text1s)))
+    dataloader = DataLoader(
+        dataset,
+        batch_size=config["data"]["batch_size"],
+        shuffle=False,
+        collate_fn=collate_fn,
+        num_workers=2,
+    )
 
-    # Get the model inputs
-    ort_inputs = {"text1s": text1s, "text2s": text2s}
+    full_preds = []
+    full_confs = []
 
-    # Forward pass through the model
-    ort_outs = ort_session.run(None, ort_inputs)
-    logits = ort_outs[0]
-    probs = F.softmax(torch.tensor(logits), dim=-1)
+    for batch in dataloader:
+        # Get the model inputs
+        input_ids, attention_mask, _ = batch
+        ort_inputs = {
+            "input_ids": input_ids.cpu().numpy(),
+            "attention_mask": attention_mask.cpu().numpy()
+        }
 
-    # Get predictions and confidence scores
-    confs, preds = torch.max(probs, dim=-1)
+        # Forward pass through the model
+        ort_outs = ort_session.run(None, ort_inputs)
+        logits, _ = ort_outs
+        logits = torch.tensor(logits)
+        probs = F.softmax(logits, dim=-1)
 
-    return list(zip([LABELS[p] for p in preds.tolist()], confs.tolist()))
+        # Get predictions and confidence scores
+        confs, preds = torch.max(probs, dim=-1)
+
+        full_confs.extend(confs.tolist())
+        full_preds.extend(preds.tolist())
+
+    return list(zip([LABELS[p] for p in full_preds], full_confs))
 
 
 def testing_torch():
@@ -206,7 +221,6 @@ def testing_torch():
             labels = labels.to(device)
 
             # Forward pass through the model
-            # logits = torch_model(input_ids, attention_mask)
             logits, _ = torch_model(input_ids, attention_mask)
             probs = F.softmax(logits, dim=-1)
 
@@ -250,24 +264,19 @@ def testing_onnx():
     for batch in tqdm(test_dataloader, desc="Testing"):
         # Get the model inputs
         input_ids, attention_mask, labels = batch
-
-        # Convert inputs to numpy
-        input_ids_np = input_ids.numpy()
-        attention_mask_np = attention_mask.numpy()
-
-        # Prepare ONNX inputs
         ort_inputs = {
-            "input_ids": input_ids_np,
-            "attention_mask": attention_mask_np
+            "input_ids": input_ids.cpu().numpy(),
+            "attention_mask": attention_mask.cpu().numpy()
         }
 
-        # Forward pass through ONNX model
+        # Forward pass through the model
         ort_outs = ort_session.run(None, ort_inputs)
         logits, _ = ort_outs
-        probs = F.softmax(torch.tensor(logits), dim=-1)
+        logits = torch.tensor(logits)
+        probs = F.softmax(logits, dim=-1)
 
-        # Get predictions
-        preds = torch.argmax(probs, dim=-1)
+        # Get predictions and confidences
+        _, preds = torch.max(probs, dim=-1)
 
         full_preds.extend(preds.cpu().numpy())
         full_labels.extend(labels.cpu().numpy())
@@ -286,5 +295,5 @@ def testing_onnx():
 
 
 if __name__ == "__main__":
-    testing_torch()
-    # testing_onnx()
+    # testing_torch()
+    testing_onnx()

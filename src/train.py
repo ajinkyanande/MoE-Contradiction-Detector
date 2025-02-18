@@ -32,8 +32,8 @@ class SNLITrainer(pl.LightningModule):
         self.model = MoEContradictionClassifier()
         self.lr = config["training"]["lr"]["lr_start"]
 
-    def forward(self, input_ids, attention_mask, traceable=False):
-        return self.model(input_ids, attention_mask, traceable=traceable)
+    def forward(self, input_ids, attention_mask):
+        return self.model(input_ids, attention_mask)
 
     def criterion(self, logits, labels, gating_probs=None):
         """
@@ -57,7 +57,6 @@ class SNLITrainer(pl.LightningModule):
         input_ids, attention_mask, labels = batch
 
         # Forward pass
-        # logits = self.model(input_ids, attention_mask)
         logits, gating_probs = self.model(input_ids, attention_mask)
 
         # Calculate loss
@@ -86,7 +85,6 @@ class SNLITrainer(pl.LightningModule):
         input_ids, attention_mask, labels = batch
 
         # Forward pass
-        # logits = self.model(input_ids, attention_mask)
         logits, gating_probs = self.model(input_ids, attention_mask)
 
         # Calculate loss

@@ -1,12 +1,14 @@
 import argparse
 
 import torch
-import torch.quantization
+import torch.nn as nn
+import torch.ao.quantization
 import torch.nn.utils.prune as prune
 import torch.onnx
 
 from src.dataset import tokenize
 from src.train import SNLITrainer
+from src.moe_model import MoEContradictionClassifier, ONNXMoEContradictionClassifier
 
 
 def cpu_quantize_model(ckpt_path, output_path):
@@ -65,11 +67,19 @@ def prune_model(ckpt_path, output_path, amount=0.2):
     print(f"Pruned model saved at {output_path}")
 
 
-def pl_to_onnx(ckpt_path, onnx_path, device="cpu"):
+def pl_to_onnx(ckpt_path, onnx_path):
+    # ONNX requires the model to be on CPU for exporting
+    device = "cpu"
+
     # Load model
     torch_model = SNLITrainer.load_from_checkpoint(ckpt_path)
     torch_model.eval()
     torch_model.to(device)
+
+    # Change model to use fully traceable forward method
+    onnx_model = ONNXMoEContradictionClassifier()
+    onnx_model.load_state_dict(torch_model.model.state_dict())
+    torch_model.model = onnx_model
 
     # Create dummy text input
     dummy_text1s = ["This is a test sentence 1.", "This is another test sentence 1."]
@@ -85,7 +95,6 @@ def pl_to_onnx(ckpt_path, onnx_path, device="cpu"):
         onnx_path,
         (dummy_input_ids, dummy_attention_mask),
         input_names=["input_ids", "attention_mask"],
-        # output_names=["logits"],
         output_names=["logits", "gating_probs"],
         dynamic_axes={
             "input_ids": {0: "batch_size", 1: "seq_len"},
@@ -101,7 +110,6 @@ if __name__ == "__main__":
     parser.add_argument("ckpt_path", type=str, help="Path to PyTorch model checkpoint")
     parser.add_argument("output_path", type=str, help="Output path for the optimized model")
     parser.add_argument("--amount", type=float, default=0.2, help="Amount to prune (default: 0.2)")
-    parser.add_argument("--device", type=str, default="cpu", help="Device to use (default: cpu)")
     args = parser.parse_args()
 
     if args.action == "quantize":
@@ -109,6 +117,6 @@ if __name__ == "__main__":
     elif args.action == "prune":
         prune_model(args.ckpt_path, args.output_path, args.amount)
     elif args.action == "onnx":
-        pl_to_onnx(args.ckpt_path, args.output_path, args.device)
+        pl_to_onnx(args.ckpt_path, args.output_path)
     else:
         raise ValueError(f"Unknown action: {args.action}")

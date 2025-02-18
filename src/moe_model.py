@@ -65,8 +65,11 @@ class MoEContradictionClassifier(nn.Module):
         # Define classifier network
         self.classifier_net = nn.Sequential(*hidden_classifier_layers, nn.Linear(input_dim, output_dim))
 
-    def forward(self, input_ids, attention_mask, traceable=False):
+    def forward(self, input_ids, attention_mask):
         """
+        Forward pass through experts that are not selected by passing zeros as input.
+        Fully traceable for ONNX export but slower inference.
+
         input_ids: (batch_size, seq_len)
         attention_mask: (batch_size, seq_len)
         """
@@ -89,53 +92,7 @@ class MoEContradictionClassifier(nn.Module):
         # Initialize expert outputs (weighted sum of expert outputs)
         classifier_probs = torch.zeros_like(gating_cls_embds, device=device)  # (batch_size, hidden_size)
 
-        def faster_non_traceable_forward(expert_idx):
-            """
-            Skips forward pass through experts that are not selected for faster inference.
-            ONNX export raises warnings about converting conditional statements to constants.
-            """
-            nonlocal classifier_probs
-
-            # Get expert encoder
-            expert_encoder = self.expert_encoders[expert_idx]
-
-            # Get mask where this expert is selected
-            mask = top_k_gating_indices == expert_idx  # (batch_size, top_k)
-
-            # Get batch indices where this expert is selected
-            selected_indices = mask.any(dim=-1)  # (batch_size,)
-
-            # Skip if this expert is not selected for any sample
-            if not selected_indices.any():
-                return
-
-            # Select input ids and attention mask for this expert
-            sample_input_ids = input_ids[selected_indices, :]  # (num_selected, seq_len)
-            sample_attention_mask = attention_mask[selected_indices, :]  # (num_selected, seq_len)
-
-            # Get corresponding gating probabilities for this expert
-            # top_k_gating_probs[selected_indices] get the rows where this expert is selected
-            # mask[selected_indices] gets the column in the row where this expert is selected
-            sample_probs = top_k_gating_probs[selected_indices] * mask[selected_indices].float()  # (num_selected, top_k)
-            sample_probs = torch.sum(sample_probs, dim=-1, keepdim=True)  # (num_selected, 1)
-
-            # Forward pass through expert encoder and get [CLS] token representation
-            expert_out = expert_encoder(sample_input_ids, attention_mask=sample_attention_mask)  # (num_selected, seq_len, hidden_size)
-            expert_cls_embds = expert_out.last_hidden_state[:, 0, :]  # (num_selected, hidden_size)
-
-            # Weight the expert output by the gating probabilities
-            weighted_expert_cls_embds = expert_cls_embds * sample_probs  # (num_selected, hidden_size)
-
-            # Scatter the weighted outputs back to the full batch tensor
-            classifier_probs[selected_indices] += weighted_expert_cls_embds
-
-        def slower_traceable_forward(expert_idx):
-            """
-            Forward pass through experts that are not selected by passing zeros as input.
-            Fully traceable for ONNX export but slower inference.
-            """
-            nonlocal classifier_probs
-
+        for expert_idx, expert_encoder in enumerate(self.expert_encoders):
             # Get mask where this expert is selected
             mask = top_k_gating_indices == expert_idx  # (batch_size, top_k)
 
@@ -163,11 +120,71 @@ class MoEContradictionClassifier(nn.Module):
             # Scatter the weighted outputs back to the full batch tensor
             classifier_probs += weighted_expert_cls_embds
 
-        for i, expert_encoder in enumerate(self.expert_encoders):
-            if traceable:
-                slower_traceable_forward(i)
-            else:
-                faster_non_traceable_forward(i)
+        # Forward pass through classifier network
+        classifier_logits = self.classifier_net(classifier_probs)  # (batch_size, output_dim)
+
+        return classifier_logits, gating_probs
+
+
+class ONNXMoEContradictionClassifier(MoEContradictionClassifier):
+    """
+    MoE (Mixture of Experts) Entailment and Contradiction Classifier.
+    """
+
+    def forward(self, input_ids, attention_mask):
+        """
+        Forward pass through experts that are not selected by passing zeros as input.
+        Fully traceable for ONNX export but slower inference.
+
+        input_ids: (batch_size, seq_len)
+        attention_mask: (batch_size, seq_len)
+        """
+        device = next(self.parameters()).device
+
+        # Forward pass through gating encoder and get [CLS] token representation
+        gating_out = self.gating_encoder(input_ids, attention_mask=attention_mask)  # (batch_size, seq_len, hidden_size)
+        gating_cls_embds = gating_out.last_hidden_state[:, 0, :]  # (batch_size, hidden_size)
+
+        # Forward pass through gating network
+        gating_probs = self.gating_net(gating_cls_embds)  # (batch_size, num_experts)
+        gating_probs = F.softmax(gating_probs, dim=-1)  # (batch_size, num_experts)
+
+        # Select top-k experts
+        top_k_gating_probs, top_k_gating_indices = gating_probs.topk(config["moe_model"]["experts_network"]["top_k"], dim=-1)  # (batch_size, top_k)
+
+        # Normalize top-k gating probabilities
+        top_k_gating_probs = top_k_gating_probs / top_k_gating_probs.sum(dim=-1, keepdim=True)  # (batch_size, top_k)
+
+        # Initialize expert outputs (weighted sum of expert outputs)
+        classifier_probs = torch.zeros_like(gating_cls_embds, device=device)  # (batch_size, hidden_size)
+
+        for expert_idx, expert_encoder in enumerate(self.expert_encoders):
+            # Get mask where this expert is selected
+            mask = top_k_gating_indices == expert_idx  # (batch_size, top_k)
+
+            # Get batch indices where this expert is selected
+            selected_indices = mask.any(dim=-1)  # (batch_size,)
+            selected_indices = selected_indices.unsqueeze(-1)  # (batch_size, 1)
+
+            # Select input ids and attention mask for this expert
+            sample_input_ids = selected_indices * input_ids  # (batch_size, seq_len)
+            sample_attention_mask = selected_indices * attention_mask  # (batch_size, seq_len)
+
+            # Get corresponding gating probabilities for this expert
+            # top_k_gating_probs get the rows where this expert is selected
+            # mask gets the column in the row where this expert is selected
+            sample_probs = (selected_indices * top_k_gating_probs) * (selected_indices * mask.float())  # (batch_size, top_k)
+            sample_probs = torch.sum(sample_probs, dim=-1, keepdim=True)  # (batch_size, 1)
+
+            # Forward pass through expert encoder and get [CLS] token representation
+            expert_out = expert_encoder(sample_input_ids, attention_mask=sample_attention_mask)  # (batch_size, seq_len, hidden_size)
+            expert_cls_embds = expert_out.last_hidden_state[:, 0, :]  # (batch_size, hidden_size)
+
+            # Weight the expert output by the gating probabilities
+            weighted_expert_cls_embds = expert_cls_embds * sample_probs  # (num_selected, hidden_size)
+
+            # Scatter the weighted outputs back to the full batch tensor
+            classifier_probs += weighted_expert_cls_embds
 
         # Forward pass through classifier network
         classifier_logits = self.classifier_net(classifier_probs)  # (batch_size, output_dim)

@@ -55,7 +55,7 @@ class SimpleContradictionClassifier(nn.Module):
         # Forward pass through classifier network
         classifier_logits = self.classifier_net(cls_embds)  # (batch_size, output_dim)
 
-        return classifier_logits
+        return classifier_logits, None
 
 
 def print_model_params(model: nn.Module):
@@ -136,7 +136,6 @@ if __name__ == "__main__":
     attention_mask = inputs["attention_mask"].to(device)  # (batch_size, seq_len)
 
     with torch.no_grad():
-        logits, gating_probs = model(input_ids, attention_mask)
+        logits, _ = model(input_ids, attention_mask)
 
     print(logits)
-    print(gating_probs)
