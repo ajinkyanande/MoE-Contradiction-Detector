@@ -101,3 +101,12 @@ sudo sh scripts/docker_run_local.sh --name=moe-contradiction-detector --tag=late
 ```sh
 sudo -E sh scripts/docker_push_ecr.sh --name=moe-contradiction-detector --tag=latest --region=<aws_region> --account=<aws_account_id>
 ```
+
+---
+
+## **Checkpoints**
+
+Download the following model checkpoints and update the `config.yaml` file with the correct paths:
+
+- **PyTorch Model**: https://drive.google.com/file/d/14Jsz5BgldJuA3tv1rYBWk9lGnmtNKXxa/view?usp=sharing
+- **ONNX Model**: https://drive.google.com/file/d/1MGP244rBeCh4sG27qqv04t_jtAmzee0M/view?usp=sharing

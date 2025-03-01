@@ -2,7 +2,6 @@
 .vscode/
 logs/
 wandb/
-models/
 
 .~lock.*
 *.txt
@@ -13,5 +12,7 @@ models/
 *.zip
 *.tar
 *.gz
+*.ckpt
+*.onnx
 
 test*
