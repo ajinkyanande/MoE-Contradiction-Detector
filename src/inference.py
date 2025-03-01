@@ -1,3 +1,5 @@
+import argparse
+
 import torch
 import torch.nn.functional as F
 import numpy as np
@@ -9,6 +11,7 @@ from tqdm import tqdm
 from src.config import config
 from src.dataset import SNLIDataset, collate_fn
 from src.train import SNLITrainer
+from src.moe_model import TraceableMoEContradictionClassifier
 
 
 # Set device
@@ -77,7 +80,8 @@ def dummy_inference(full_text1s: list[str], full_text2s: list[str]) -> list[tupl
 def load_torch_model():
     global torch_model
     if torch_model is None:
-        torch_model = SNLITrainer.load_from_checkpoint(config["inference"]["pretrained_model_path"]).model
+        torch_model = SNLITrainer.load_from_checkpoint(config["inference"]["pretrained_model_path"])
+        torch_model.eval()
         torch_model.to(device)
 
 
@@ -85,9 +89,15 @@ def load_onnx_model():
     global ort_session
     if ort_session is None:
         if device == "cpu":
-            ort_session = ort.InferenceSession(config["inference"]["onnx_model_path"], providers=["CPUExecutionProvider"])
+            ort_session = ort.InferenceSession(
+                config["inference"]["onnx_model_path"],
+                providers=["CPUExecutionProvider"]
+            )
         elif device == "cuda":
-            ort_session = ort.InferenceSession(config["inference"]["onnx_model_path"], providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
+            ort_session = ort.InferenceSession(
+                config["inference"]["onnx_model_path"],
+                providers=["TensorrtExecutionProvider", "CUDAExecutionProvider", "CPUExecutionProvider"]
+            )
         else:
             raise ValueError(f"Unknown device: {device}")
 
@@ -200,6 +210,13 @@ def testing_torch():
     if torch_model is None:
         load_torch_model()
 
+    # # Change model to use fully traceable forward method
+    # onnx_model = TraceableMoEContradictionClassifier()
+    # onnx_model.load_state_dict(torch_model.model.state_dict())
+    # torch_model.model = onnx_model
+    # torch_model.eval()
+    # torch_model.to(device)
+
     test_dataset = SNLIDataset(split="test")
     test_dataloader = DataLoader(
         test_dataset,
@@ -295,5 +312,13 @@ def testing_onnx():
 
 
 if __name__ == "__main__":
-    # testing_torch()
-    testing_onnx()
+    parser = argparse.ArgumentParser(description="Model testing / inference tools")
+    parser.add_argument("action", type=str, help="Action to perform", choices=["torch", "onnx"])
+    args = parser.parse_args()
+
+    if args.action == "torch":
+        testing_torch()
+    elif args.action == "onnx":
+        testing_onnx()
+    else:
+        raise ValueError(f"Unknown action: {args.action}")

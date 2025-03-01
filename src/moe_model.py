@@ -126,7 +126,7 @@ class MoEContradictionClassifier(nn.Module):
         return classifier_logits, gating_probs
 
 
-class ONNXMoEContradictionClassifier(MoEContradictionClassifier):
+class TraceableMoEContradictionClassifier(MoEContradictionClassifier):
     """
     MoE (Mixture of Experts) Entailment and Contradiction Classifier.
     """

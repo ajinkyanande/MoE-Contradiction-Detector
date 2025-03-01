@@ -8,7 +8,7 @@ import torch.onnx
 
 from src.dataset import tokenize
 from src.train import SNLITrainer
-from src.moe_model import MoEContradictionClassifier, ONNXMoEContradictionClassifier
+from src.moe_model import MoEContradictionClassifier, TraceableMoEContradictionClassifier
 
 
 def cpu_quantize_model(ckpt_path, output_path):
@@ -77,9 +77,9 @@ def pl_to_onnx(ckpt_path, onnx_path):
     torch_model.to(device)
 
     # Change model to use fully traceable forward method
-    onnx_model = ONNXMoEContradictionClassifier()
-    onnx_model.load_state_dict(torch_model.model.state_dict())
-    torch_model.model = onnx_model
+    traceable_model = TraceableMoEContradictionClassifier()
+    traceable_model.load_state_dict(torch_model.model.state_dict())
+    torch_model.model = traceable_model
 
     # Create dummy text input
     dummy_text1s = ["This is a test sentence 1.", "This is another test sentence 1."]
